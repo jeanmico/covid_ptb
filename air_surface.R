@@ -1,0 +1,72 @@
+require(RColorBrewer); require(ggplot2)
+require(mapdata); require(maptools)
+library(raster); library(zipcode) 
+library(choroplethr)
+library(rgdal)
+library(ggmap)
+library(sp)
+require("plyr"); require(dplyr)
+library(tgp)
+library(mgcv)
+library(gstat)
+library(automap)
+library(raster) 
+library(dismo)
+library(reshape)
+library(reshape2)
+library(leaflet); library(rgeos)
+library(leaflet.extras)
+library(rgdal)
+require(ggspatial)
+library(mapview); library(webshot)
+library(rasterVis)
+library(sf)
+library(tidyverse)
+library(stringr)
+library(viridis)
+library(scico)
+library(patchwork)
+
+# install.packages("ncdf4")
+library(ncdf4)
+
+setwd("~/covid/")
+
+#pm25  <- raster("~/covid/V4NA03_PM25_NA_201801_201812-RH35-NoNegs.asc/V4NA03_PM25_NA_201801_201812-RH35-NoNegs.asc")
+
+pm25 <- raster("V4NA03_PM25_NA_201801_201812-RH35.nc")
+pmdat <- projectRaster(pm25, crs = "+proj=longlat +datum=WGS84")
+
+## just pulling out a kind of random box somewhat covering NYC, in your case it'll be the box around MA
+ny.e <- as(extent(-74.078642, -73.654181, 40.639492, 40.913017), 'SpatialPolygons')
+
+pm.ny <- crop(pmdat, ny.e)
+plot(pm.ny) ## see that it still gives full coverage! so no need for idw!
+
+
+## here i am just creating a dummy dataset with my home and office addresses, but in your case it'd be the data frame with the ALS cases' addresses
+mak.addr <- data.frame(rbind(c(-74.0108925, 40.7190305), c(-73.9433492, 40.8424454)))
+mak.addr$id <- c("home", "office")
+names(mak.addr)[1:2] <- c("long", "lat")
+
+mm1 <- raster::extract(pm.ny, SpatialPoints(mak.addr[c("long", "lat")]), df=T)
+
+mm1
+
+
+epa_raw = read.csv('EPA_2020_pm25_CA.csv')
+
+# what is county coverage?
+num_counties = length(unique(epa_raw$COUNTY_CODE))
+# CA has 58 total counties; we have data for 51
+
+epa_location = epa_raw %>% dplyr::select(Site.ID, SITE_LATITUDE, SITE_LONGITUDE) %>% distinct()
+
+epa_rast <- raster::extract(pmdat, SpatialPointsDataFrame(epa_location[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
+                                                          data = epa_location['Site.ID']), df=TRUE)
+epa_rast <- cbind(epa_rast, epa_location$Site.ID)
+
+a = SpatialPointsDataFrame(epa_location[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
+                           data = epa_location['Site.ID'])
+a@data
+b = raster::extract(pmdat, a)
