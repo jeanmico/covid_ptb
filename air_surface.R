@@ -65,8 +65,32 @@ epa_location = epa_raw %>% dplyr::select(Site.ID, SITE_LATITUDE, SITE_LONGITUDE)
 epa_rast <- raster::extract(pmdat, SpatialPointsDataFrame(epa_location[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
                                                           data = epa_location['Site.ID']), df=TRUE)
 epa_rast <- cbind(epa_rast, epa_location$Site.ID)
+colnames(epa_rast) <- c('ID', 'PM2.5', 'Site.ID')
 
 a = SpatialPointsDataFrame(epa_location[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
                            data = epa_location['Site.ID'])
 a@data
 b = raster::extract(pmdat, a)
+
+epa <- merge(epa_raw, epa_rast, by='Site.ID', all.x = TRUE)
+
+epa <- epa %>% mutate(multiplier = Daily.Mean.PM2.5.Concentration/PM2.5)
+
+county_mult <- epa %>% dplyr::group_by(COUNTY_CODE, Date) %>%
+  dplyr::summarise(
+    mean_mult = mean(multiplier), stdev_mult = sd(multiplier), num_measures = n())
+
+#histograms of standard deviations (for multiple sensors within county)
+sd_hist <- ggplot(filter(county_mult, num_measures>1), aes(x=stdev_mult)) +
+  geom_histogram()
+sd_hist
+
+n_hist <- ggplot(county_mult, aes(x=num_measures)) + 
+  geom_histogram()
+n_hist
+range(county_mult$num_measures)
+
+b <- county_mult %>% filter(num_measures == 1)
+
+range(county_mult$sd_mult, na.rm = TRUE)
+range(county_mult$mean_mult, na.rm = TRUE)
