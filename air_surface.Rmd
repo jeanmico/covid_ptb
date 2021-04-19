@@ -1,0 +1,156 @@
+---
+title: "Air surface construction and analysis"
+author: "Jean Costello"
+date: "4/19/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+
+require(RColorBrewer); require(ggplot2)
+require(mapdata); require(maptools)
+library(raster)
+#library(zipcode) 
+library(choroplethr)
+library(rgdal)
+library(ggmap)
+library(sp)
+require("plyr"); require(dplyr)
+library(tgp)
+library(mgcv)
+library(gstat)
+library(automap)
+library(raster) 
+library(dismo)
+library(reshape)
+library(reshape2)
+library(leaflet); library(rgeos)
+library(leaflet.extras)
+library(rgdal)
+require(ggspatial)
+library(mapview); library(webshot)
+library(rasterVis)
+library(sf)
+library(tidyverse)
+library(stringr)
+library(viridis)
+library(scico)
+library(patchwork)
+
+# install.packages("ncdf4")
+library(ncdf4)
+```
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r read files}
+county_ref = read.csv('~/covid/california_county_dict.csv')
+epa_raw = read.csv('~/covid/EPA_2020_pm25_CA.csv')
+```
+
+How many counties do not have an EPA sensor?
+```{r}
+epa_counties <- unique(epa_raw$COUNTY_CODE)
+print(nrow(county_ref) - length(epa_counties))
+```
+Which counties do not have a sensor?
+```{r counties with no sensors}
+missing_fips <- setdiff(county_ref$county_fips, epa_counties)
+print(county_ref[county_ref$county_fips %in% missing_fips, ]$county_name)
+```
+Where are these counties located?
+```{r counties with no sensors map}
+
+
+```
+
+Which counties have multiple sensors?
+```{r counties with multiple sensors}
+sensor_locations <- epa_raw %>% 
+  dplyr::select(Site.ID, Site.Name, CBSA_CODE, CBSA_NAME, STATE_CODE, STATE, COUNTY_CODE, COUNTY, SITE_LATITUDE, SITE_LONGITUDE) %>%
+  distinct()
+
+sensors_by_county <- sensor_locations %>%
+  group_by(COUNTY_CODE) %>% summarise(num_sensors = n())
+
+# add number of EPA sensors to the county reference df
+county_ref = merge(county_ref, sensors_by_county, by.x = 'county_fips', by.y = 'COUNTY_CODE', all.x = TRUE)
+county_ref[is.na(county_ref)] <- 0
+print(county_ref[county_ref$num_sensors > 1, c('county_name', 'num_sensors')]) # print the names and number of sensors in counties with more than 1
+```
+```{r sensors map}
+
+```
+
+In counties with multiple sensors, how well do they agree?
+
+Determine the multiplicative factor for every county for every day in 2020
+
+```{r read air surface}
+pm25 <- raster("~/covid/V4NA03_PM25_NA_201801_201812-RH35.nc")
+pmdat <- projectRaster(pm25, crs = "+proj=longlat +datum=WGS84")
+
+```
+
+```{r process air surface}
+epa_rast <- raster::extract(pmdat, SpatialPointsDataFrame(sensor_locations[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
+                                                          data = sensor_locations['Site.ID']), df=TRUE)
+epa_rast <- cbind(epa_rast, sensor_locations$Site.ID)
+colnames(epa_rast) <- c('ID', 'PM2.5', 'Site.ID') #rename columns
+
+epa <- merge(epa_raw, epa_rast, by='Site.ID', all.x = TRUE)
+
+epa <- epa %>% mutate(multiplier = Daily.Mean.PM2.5.Concentration/PM2.5)
+
+county_mult <- epa %>% dplyr::group_by(COUNTY_CODE, Date) %>%
+  dplyr::summarise(
+    mean_mult = mean(multiplier), stdev_mult = sd(multiplier), num_measures = n())
+
+#histograms of standard deviations (for multiple sensors within county)
+sd_hist <- ggplot(filter(county_mult, num_measures>1), aes(x=stdev_mult)) +
+  geom_histogram()
+sd_hist
+
+n_hist <- ggplot(county_mult, aes(x=num_measures)) + 
+  geom_histogram()
+n_hist
+range(county_mult$num_measures)
+
+b <- county_mult %>% filter(num_measures == 1)
+
+range(county_mult$sd_mult, na.rm = TRUE)
+range(county_mult$mean_mult, na.rm = TRUE)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
