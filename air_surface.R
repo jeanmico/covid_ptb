@@ -38,10 +38,10 @@ pm25 <- raster("V4NA03_PM25_NA_201801_201812-RH35.nc")
 pmdat <- projectRaster(pm25, crs = "+proj=longlat +datum=WGS84")
 
 ## just pulling out a kind of random box somewhat covering NYC, in your case it'll be the box around MA
-ny.e <- as(extent(-74.078642, -73.654181, 40.639492, 40.913017), 'SpatialPolygons')
+bay_area <- as(extent(-123, -120.93, 36.6, 38.6 ), 'SpatialPolygons')
 
-pm.ny <- crop(pmdat, ny.e)
-plot(pm.ny) ## see that it still gives full coverage! so no need for idw!
+pm_bayarea <- crop(pmdat, bay_area)
+plot(pm_bayarea) ## see that it still gives full coverage! so no need for idw!
 
 
 ## here i am just creating a dummy dataset with my home and office addresses, but in your case it'd be the data frame with the ALS cases' addresses
@@ -49,16 +49,19 @@ mak.addr <- data.frame(rbind(c(-74.0108925, 40.7190305), c(-73.9433492, 40.84244
 mak.addr$id <- c("home", "office")
 names(mak.addr)[1:2] <- c("long", "lat")
 
-mm1 <- raster::extract(pm.ny, SpatialPoints(mak.addr[c("long", "lat")]), df=T)
+mm1 <- raster::extract(pm_bayarea, SpatialPoints(mak.addr[c("long", "lat")]), df=T)
 
 mm1
 
-
+# read in the epa data for 2020
 epa_raw = read.csv('EPA_2020_pm25_CA.csv')
+
 
 # what is county coverage?
 num_counties = length(unique(epa_raw$COUNTY_CODE))
 # CA has 58 total counties; we have data for 51
+
+# what counties are we missing?
 
 epa_location = epa_raw %>% dplyr::select(Site.ID, SITE_LATITUDE, SITE_LONGITUDE) %>% distinct()
 

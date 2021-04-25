@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-```{r libraries}
+```{r, libraries, echo=FALSE, message=FALSE, warning=FALSE}
 
 require(RColorBrewer); require(ggplot2)
 require(mapdata); require(maptools)
@@ -47,11 +47,7 @@ library(ncdf4)
 ```
 
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+## Air surface
 
 ```{r read files}
 county_ref = read.csv('~/covid/california_county_dict.csv')
@@ -94,15 +90,13 @@ print(county_ref[county_ref$num_sensors > 1, c('county_name', 'num_sensors')]) #
 
 In counties with multiple sensors, how well do they agree?
 
-Determine the multiplicative factor for every county for every day in 2020
-
 ```{r read air surface}
 pm25 <- raster("~/covid/V4NA03_PM25_NA_201801_201812-RH35.nc")
 pmdat <- projectRaster(pm25, crs = "+proj=longlat +datum=WGS84")
 
 ```
 
-```{r process air surface}
+```{r determine county multipliers}
 epa_rast <- raster::extract(pmdat, SpatialPointsDataFrame(sensor_locations[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
                                                           data = sensor_locations['Site.ID']), df=TRUE)
 epa_rast <- cbind(epa_rast, sensor_locations$Site.ID)
@@ -115,24 +109,23 @@ epa <- epa %>% mutate(multiplier = Daily.Mean.PM2.5.Concentration/PM2.5)
 county_mult <- epa %>% dplyr::group_by(COUNTY_CODE, Date) %>%
   dplyr::summarise(
     mean_mult = mean(multiplier), stdev_mult = sd(multiplier), num_measures = n())
+```
 
+```{r standard deviations plot}
 #histograms of standard deviations (for multiple sensors within county)
 sd_hist <- ggplot(filter(county_mult, num_measures>1), aes(x=stdev_mult)) +
-  geom_histogram()
+  geom_histogram()  +
+  scale_y_continuous(trans='log10') +
+  ylab('Count') +
+  xlab('Standard deviation of sensors within counties') +
+  theme_minimal()
 sd_hist
-
-n_hist <- ggplot(county_mult, aes(x=num_measures)) + 
-  geom_histogram()
-n_hist
-range(county_mult$num_measures)
-
-b <- county_mult %>% filter(num_measures == 1)
-
-range(county_mult$sd_mult, na.rm = TRUE)
-range(county_mult$mean_mult, na.rm = TRUE)
-
-
 ```
+
+The range of standard deviations of sensors within counties is `r range(county_mult$stdev_mult, na.rm = TRUE)`.
+
+How many multipliers are negative? `r nrow(county_mult[county_mult$mean_mult < 0, ])`
+
 
 
 
