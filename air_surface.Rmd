@@ -63,8 +63,17 @@ print(nrow(county_ref) - length(epa_counties))
 Which counties do not have a sensor?
 ```{r counties with no sensors}
 missing_fips <- setdiff(county_ref$county_fips, epa_counties)
-print(county_ref[county_ref$county_fips %in% missing_fips, ]$county_name)
+counties_no_sensors = county_ref[county_ref$county_fips %in% missing_fips, ]
+print(counties_no_sensors$county_name)
 ```
+
+Pull in sensors for counties with none.
+```{r}
+#nearest_sensors <- read.csv('~/covid/county_sensors_nnjoin.csv')
+distance_matrix <- read.csv('~/covid/distance_matrix.csv')
+colnames(distance_matrix) <- c('county_fips', 'sensor_id', 'distance')
+```
+
 Where are these counties located?
 ```{r counties with no sensors map}
 
@@ -97,6 +106,18 @@ pmdat <- projectRaster(pm25, crs = "+proj=longlat +datum=WGS84")
 
 ```
 
+```{r}
+#empty_counties <- nearest_sensors %>% filter(COUNTYFP %in% counties_no_sensors$county_fips)
+
+#add_counties <- merge( epa_raw, empty_counties, by.x = 'Site.ID' , by.y = 'HubName')
+
+#add_counties <- add_counties %>% mutate(COUNTY_CODE = COUNTYFP, COUNTY = NAME) %>% dplyr::select(colnames(epa_raw))
+
+#epa_raw <- rbind(epa_raw, add_counties)
+
+```
+
+
 ```{r determine county multipliers}
 epa_rast <- raster::extract(pmdat, SpatialPointsDataFrame(sensor_locations[c("SITE_LONGITUDE", 'SITE_LATITUDE')], 
                                                           data = sensor_locations['Site.ID']), df=TRUE)
@@ -107,10 +128,23 @@ epa <- merge(epa_raw, epa_rast, by='Site.ID', all.x = TRUE)
 
 epa <- epa %>% mutate(multiplier = Daily.Mean.PM2.5.Concentration/PM2.5)
 
+# if any Site.IDs are duplicated, select the lowest POC and discard the others 
+#  delete this if we are only using POC == 1
+
+# compute the average multiplier by county
 county_mult <- epa %>% dplyr::group_by(COUNTY_CODE, Date) %>%
   dplyr::summarise(
     mean_mult = mean(multiplier), stdev_mult = sd(multiplier), num_measures = n())
 ```
+How many days are we missing per county??
+```{r}
+
+
+
+
+
+```
+
 
 ```{r standard deviations plot}
 #histograms of standard deviations (for multiple sensors within county)
@@ -163,15 +197,10 @@ rast_18
 Multiply each county.
 
 ```{r}
-# deal with counties with no measurements
-
-
 
 # basic raster with extent
 r<- raster(ncol = ncol(pm25_ca), nrow = nrow(pm25_ca))
 extent(r) <- extent(ca_county)
-
-pm25_ca_nad <- projectRaster(pm25_ca, crs = '+proj=longlat +datum=NAD83 +no_defs')
 
 
 # the more correct approach:
@@ -183,20 +212,44 @@ for (tmpdate in datelist[1]) {
   
   datemult <- county_mult %>% filter(as.Date(Date, '%d/%m/%Y') == tmpdate)
   print(nrow(datemult))
-  county_full <- merge(ca_county, datemult, by.x = 'county_int', by.y = 'COUNTY_CODE')
   
+  if (nrow(datemult) < 58) {
+    # deal with counties without a sensor
+    tmp_epa <- epa %>% filter(as.Date(Date, '%d/%m/%Y') == tmpdate)  # epa sensors available for the current date
+    tmp_fips <- setdiff(county_ref$county_fips, datemult$COUNTY_CODE)  # what counties are we missing?
+    
+    tmp_dist <- distance_matrix %>% filter(county_fips %in% tmp_fips, sensor_id %in% tmp_epa$Site.ID) %>% 
+      group_by(county_fips) %>%
+      dplyr::summarise(nearest_epa = sensor_id[which.min(distance)])  # find the nearest sensor available
+    
+    if (nrow(tmp_dist) + nrow(datemult) != 58) {
+      print(paste('No sensors for the counties:', setdiff(tmp_fips, tmp_dist$county_fips)))
+    }
+
+    tmp_add = merge(tmp_epa, tmp_dist, by.x = 'Site.ID' , by.y = 'nearest_epa')
+    
+    # reassign county, create and select necessary columns
+    tmp_add <- tmp_add %>% mutate(COUNTY_CODE = county_fips, 
+                                  mean_mult = multiplier, stdev_mult = 0, num_measures = 1) %>% 
+      dplyr::select(COUNTY_CODE, Date, mean_mult, stdev_mult, num_measures)
+
+    datemult <- rbind(datemult, tmp_add)  # add on values for the missing counties
+  }
+
+  county_full <- merge(ca_county, datemult, by.x = 'county_int', by.y = 'COUNTY_CODE')
+
   # make a raster of the county file, value set to county multiplier
   rast_mult <- rasterize(county_full, r, 'mean_mult')
   
-  rs_rast_mult <- resample(rast_mult, pm25_ca)
-  print('yay')
+  rs_rast_mult <- resample(rast_mult, pm25_ca)  # TODO: why is this so SLOW??
+
   # multiply the two rasters and save the output
   rast_date = rs_rast_mult * pm25_ca
 }
 
-tm_shape(rast_date, bbox = ca_county) + tm_raster()
-
-res(rs_rast_mult)
+tm_shape(rast_date, bbox = ca_county) + tm_raster() +
+  tm_shape(ca_county) + tm_polygons(alpha = 0) +
+  tm_layout(legend.position = c('right', 'top'))
 
 
 
