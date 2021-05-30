@@ -130,6 +130,12 @@ epa <- epa %>% mutate(multiplier = Daily.Mean.PM2.5.Concentration/PM2.5)
 
 # if any Site.IDs are duplicated, select the lowest POC and discard the others 
 #  delete this if we are only using POC == 1
+epa_rmv <- epa %>% group_by(Site.ID, Date) %>% 
+  dplyr::summarize(dup_count = n(), keep_POC = min(POC))
+
+# remove rows where Site.ID = '' and POC = '')
+epa  <- merge(epa, epa_rmv, by = c('Site.ID', 'Date'))
+epa <- epa %>% filter(POC == keep_POC) %>% dplyr::select(-c('dup_count', 'keep_POC'))
 
 # compute the average multiplier by county
 county_mult <- epa %>% dplyr::group_by(COUNTY_CODE, Date) %>%
@@ -198,6 +204,9 @@ Multiply each county.
 
 ```{r}
 
+rastname_base = '/Volumes/Padlock/covid/rasts/'
+rastname_img = '/Volumes/Padlock/covid/rast_imgs/'
+
 # basic raster with extent
 r<- raster(ncol = ncol(pm25_ca), nrow = nrow(pm25_ca))
 extent(r) <- extent(ca_county)
@@ -208,14 +217,13 @@ extent(r) <- extent(ca_county)
 #   multiply the rasters
 #   store each day as an output
 datelist <- seq(as.Date('2020-01-01'), as.Date('2020-12-31'), by='days')
-for (tmpdate in datelist[1]) {
-  
-  datemult <- county_mult %>% filter(as.Date(Date, '%d/%m/%Y') == tmpdate)
-  print(nrow(datemult))
+for (i in 1:length(datelist)) {
+  print(paste(i, 'start', Sys.time()))
+  datemult <- county_mult %>% filter(as.Date(Date, '%m/%d/%Y') == datelist[i])
   
   if (nrow(datemult) < 58) {
     # deal with counties without a sensor
-    tmp_epa <- epa %>% filter(as.Date(Date, '%d/%m/%Y') == tmpdate)  # epa sensors available for the current date
+    tmp_epa <- epa %>% filter(as.Date(Date, '%m/%d/%Y') == datelist[i])  # epa sensors available for the current date
     tmp_fips <- setdiff(county_ref$county_fips, datemult$COUNTY_CODE)  # what counties are we missing?
     
     tmp_dist <- distance_matrix %>% filter(county_fips %in% tmp_fips, sensor_id %in% tmp_epa$Site.ID) %>% 
@@ -245,15 +253,26 @@ for (tmpdate in datelist[1]) {
 
   # multiply the two rasters and save the output
   rast_date = rs_rast_mult * pm25_ca
+  
+    #rastname = paste(rast_basename, i, '.grd', sep = '_')
+  #writeRaster(raster(tmprast), filename = rastname)
+  
+  rastname = paste(rastname_base, datelist[i], '.grd', sep = '')
+  writeRaster(rast_date, filename = rastname)
+  
+  rastimg = paste(rastname_img, datelist[i], '.png', sep = '')
+  
+  rastplt = tm_shape(rast_date, bbox = ca_county) + tm_raster(title = 'PM2.5') +
+  tm_shape(ca_county) + tm_polygons(alpha = 0) +
+  tm_layout(title = datelist[i], title.position = c('right', 'top'),
+    legend.position = c(.8, .6))
+  
+  tmap_save(rastplt, rastimg)
+  
+  print(paste(i, 'complete', Sys.time()))
 }
 
-tm_shape(rast_date, bbox = ca_county) + tm_raster() +
-  tm_shape(ca_county) + tm_polygons(alpha = 0) +
-  tm_layout(legend.position = c('right', 'top'))
 
-
-
-rastname_base = '/Volumes/Padlock/covid/rasts/'
 
 
 ```
