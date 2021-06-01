@@ -1,4 +1,7 @@
 library(tidyverse)
+library(lubridate)
+library(tableone)
+library(epitools)
 
 setwd('/Volumes/Padlock/covid/')
 
@@ -61,7 +64,7 @@ for (myfact in fact_cols) {
 births <- births_tmp
 
 # generate table one 
-library(tableone)
+
 mytab <- CreateTableOne(vars = c(fact_cols, 'wic'), data = births, factorVars = fact_cols)
 
 mytab
@@ -70,9 +73,72 @@ mytab
 
 
 # determine start date of pregnancy
+births <- births %>% mutate(baby_DOB = mdy(baby_DOB)) %>%
+  mutate(start_date = ymd(baby_DOB) - weeks(gest_weeks))
+
+births <- births %>% mutate(tri2_start = start_date + make_difftime(weeks = 12), tri3_start = tri2_start + make_difftime(weeks = 12))
+
+# LA county closed on Mar 16 2020
+covid_start_date = ymd('2020-04-16')
+
+births <- births %>% mutate(covid_start_in = case_when(
+    covid_start_date < start_date ~ 'tri_0',
+    covid_start_date < tri2_start ~ 'tri_1',
+    covid_start_date < tri3_start ~ 'tri_2',
+    covid_start_date < baby_DOB ~ 'tri_3',
+  TRUE ~ 'post_partum'))
+
+births_dateplt <- births %>% arrange(desc(start_date)) %>% mutate(date_order = row_number())
+
+timeplt <- ggplot(births_dateplt, aes(as.Date(start_date), date_order, color = covid_start_in)) +
+  geom_crossbar(aes(xmin = as.Date(start_date), xmax = as.Date(baby_DOB)), width = 0.2) +
+  scale_color_manual(values=c( '#a2191f', '#606060', '#808080', '#E0E0E0')) +
+  scale_x_date() + 
+  xlab('Date') + 
+  ylab('Pregnancy') +
+  geom_vline(xintercept = covid_start_date) + 
+  #guides(colour = guide_legend(override.aes = list(linetype=c(1,1,1,1), size = 2.2))) + # can't seem to override legend symbol
+  theme(axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(), 
+        plot.background=element_blank(), 
+        panel.background=element_rect(fill='white'), 
+        panel.grid = element_line(color='grey', size=.1)) 
+
+
+timeplt
+
+ggsave(timeplt, file = 'timeplt.png')
+
+
+births_postcovid = births %>% filter(covid_start_in == 'tri_0')
+
+births_postcovid$preterm[is.na(births_postcovid$preterm)] <- 0
+a = epitable(births_postcovid$any_mat_covid, births_postcovid$preterm)
+epitab(a, method = 'oddsratio')
+
+mytab <- CreateTableOne(vars = c(fact_cols, 'wic'), data = births_postcovid, factorVars = fact_cols)
+
+mytab
+
+tbl1print = print(mytab)
+write.csv(tbl1print, file = 'tbl1print.csv')
+
+points_file <- births %>% dplyr::select(longitude, latitude) %>% distinct()
+write.csv(points_file, file = '/Volumes/Padlock/covid/lookup_points.csv', row.names = FALSE)
 
 
 
-# plot pregnancy timeline with addl landmarks
-#  when did the Bay Area shut down?
-#  when did Los Angeles shut down?
+# read in raster value extracts
+filenames = list.files('/Volumes/Padlock/covid/values_extracted', full.names = TRUE)
+extract_vals2 = data.frame(matrix(nrow = 0, ncol = 4))
+colnames(extract_vals2) = c("longitude", "latitude", "layer", "date")
+
+for (tmpfile in filenames) {
+  print(paste(basename(tmpfile), "start", Sys.time()))
+  tmpdf = read.csv(tmpfile)
+  extract_vals2 = rbind(extract_vals, tmpdf)
+  print(nrow(extract_vals)/203527)
+}
+
+# compute CUMULATIVE exposure for each pregnancy
+
