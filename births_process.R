@@ -65,7 +65,7 @@ births <- births_tmp
 
 # generate table one 
 
-mytab <- CreateTableOne(vars = c(fact_cols, 'wic'), data = births, factorVars = fact_cols)
+mytab <- CreateTableOne(vars = c(fact_cols), data = births, factorVars = fact_cols)
 
 mytab
 
@@ -116,7 +116,7 @@ births_postcovid$preterm[is.na(births_postcovid$preterm)] <- 0
 a = epitable(births_postcovid$any_mat_covid, births_postcovid$preterm)
 epitab(a, method = 'oddsratio')
 
-mytab <- CreateTableOne(vars = c(fact_cols, 'wic'), data = births_postcovid, factorVars = fact_cols)
+mytab <- CreateTableOne(vars = c(fact_cols, 'wic'), data = births, factorVars = fact_cols)
 
 mytab
 
@@ -129,16 +129,60 @@ write.csv(points_file, file = '/Volumes/Padlock/covid/lookup_points.csv', row.na
 
 
 # read in raster value extracts
-filenames = list.files('/Volumes/Padlock/covid/values_extracted', full.names = TRUE)
-extract_vals2 = data.frame(matrix(nrow = 0, ncol = 4))
-colnames(extract_vals2) = c("longitude", "latitude", "layer", "date")
-
-for (tmpfile in filenames) {
-  print(paste(basename(tmpfile), "start", Sys.time()))
-  tmpdf = read.csv(tmpfile)
-  extract_vals2 = rbind(extract_vals, tmpdf)
-  print(nrow(extract_vals)/203527)
-}
+filenames = list.files('/Volumes/Padlock/covid/values_month_summed', full.names = TRUE)
+extract_vals = do.call('cbind', lapply(filenames, read.csv, header = TRUE))
+colnames(extract_vals) = c('m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12')
+extract_vals = cbind(points_file, extract_vals)
 
 # compute CUMULATIVE exposure for each pregnancy
+# calculate complete months
+exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB)
 
+# code months as no pregnant days (0), some pregnant days, all pregnant days
+#exposure_calc <- exposure_calc %>% mutate(month_cncp = paste('m', month(start_date), sep = ''),
+ #                        month_deliv = paste('m', month(baby_DOB), sep = ''),
+  #                       full_cncp = case_when(day(start_date) == 1 ~ TRUE, TRUE ~ FALSE),
+   #                      full_deliv = case_when(baby_DOB == ceiling_date(baby_DOB, 'month') - days(1) ~ TRUE, TRUE ~ FALSE))
+
+earliest_date = ymd('2020-01-01')
+latest_date = ymd('2021-01-31')
+
+#date_cols = seq.Date(earliest_date, latest_date, by = 'month')
+#date_cols = format(date_cols, '%Y-%m')
+#date_cols = paste('X', date_cols, sep = '')
+
+ #exposure_calc[,date_cols] = NA
+ 
+ 
+ #mini_exp = sample_n(exposure_calc, 20000)
+ 
+ # THIS IS SLOWWWWW
+# test <- exposure_calc %>% 
+#   rowwise() %>%
+#   do(data.frame(VS_unique = .$VS_unique, longitude = .$longitude, latitude = .$latitude, start_date = .$start_date, baby_DOB =.$baby_DOB,
+#                 month = seq(earliest_date, latest_date, by = 'month')))
+
+exposure_calc <- exposure_calc %>% filter(!is.na(start_date) & !is.na(baby_DOB) & !is.na(latitude) & !is.na(longitude))
+#mini_exp <- mini_exp %>% filter(!is.na(start_date))
+test1 <- exposure_calc %>% 
+   rowwise() %>%
+   do(data.frame(VS_unique = .$VS_unique, longitude = .$longitude, latitude = .$latitude, start_date = .$start_date, baby_DOB =.$baby_DOB,
+                 month = seq(floor_date(.$start_date, "month"), ceiling_date(.$baby_DOB, 'month') - days(1), by = 'month')))
+
+write.csv(test1, file = '/Volumes/Padlock/covid/20210602exposure_calc.csv', row.names = FALSE)
+
+exposure_calc = test1
+
+test <- mini_exp
+
+extract_values <- extract_vals %>% pivot_longer(cols = starts_with("m"),
+                                                names_to = "month",
+                                                names_prefix = "m",
+                                                values_to = "values")
+
+extract_values <- extract_values %>% mutate(year_month = ym(paste('2020', month , sep = '')))
+
+#mini_exp = exposure_calc[sample(nrow(exposure_calc), 500), ]
+exposure_calc <- exposure_calc %>% dplyr::rename(year_month = month)
+
+t <- left_join(exposure_calc, extract_values)
