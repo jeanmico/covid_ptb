@@ -24,40 +24,51 @@ library(ncdf4)
 #rastname_base = '/Volumes/Padlock/covid/rasts_POC_1/'
 rastname_base = '~/covd/output/rasts_POC_1/'
 
+## FUNCTIONS #######
+
+sensor_locate <- function(sensors) {
+  locations <- sensors %>% 
+    dplyr::select(Site.ID, Site.Name, CBSA_CODE, CBSA_NAME, STATE_CODE, STATE, COUNTY_CODE, COUNTY, SITE_LATITUDE, SITE_LONGITUDE) %>%
+    distinct()
+  return(locations)
+}
+
+sensor_county <- function(sensors_loc) {
+  sensors_by_county <- sensors_loc %>%
+    group_by(COUNTY_CODE) %>% dplyr::summarise(num_sensors = n())
+}
+
+
 ## Air surface
 county_ref = read.csv('~/covid/data/california_county_dict.csv')
 epa_raw = read.csv('~/covid/data/EPA_2020_pm25_CA.csv')
-
-# filter by POC (comment out to use all sensors)
-epa_raw <- epa_raw %>% filter(POC == 1)
-
-# How many counties do not have an EPA sensor?
-epa_counties <- unique(epa_raw$COUNTY_CODE)
-#print(nrow(county_ref) - length(epa_counties))
-
-# Which counties do not have a sensor?
-missing_fips <- setdiff(county_ref$county_fips, epa_counties)
-counties_no_sensors = county_ref[county_ref$county_fips %in% missing_fips, ]
-#print(counties_no_sensors$county_name)
 
 # Distance matrix of county centroids to sensors
 distance_matrix <- read.csv('~/covid/data/distance_matrix.csv')
 colnames(distance_matrix) <- c('county_fips', 'sensor_id', 'distance')
 
+# filter by POC (comment out to use all sensors)
+poc1 <- epa_raw %>% filter(POC == 1)
 
-# Which counties have multiple sensors?
-sensor_locations <- epa_raw %>% 
-  dplyr::select(Site.ID, Site.Name, CBSA_CODE, CBSA_NAME, STATE_CODE, STATE, COUNTY_CODE, COUNTY, SITE_LATITUDE, SITE_LONGITUDE) %>%
-  distinct()
+sensor_locations <- sensor_locate(epa_raw)
+sensors_by_county <- sensor_county(sensor_locations)
 
-sensors_by_county <- sensor_locations %>%
-  group_by(COUNTY_CODE) %>% dplyr::summarise(num_sensors = n())
+poc1_locations <- sensor_locate(poc1)
+poc1_by_county <- sensor_county(poc1_locations)
 
 # add number of EPA sensors to the county reference df
+county_ref = merge(county_ref, poc1_by_county, by.x = 'county_fips', by.y = 'COUNTY_CODE', all.x = TRUE)
+
+
 county_ref = merge(county_ref, sensors_by_county, by.x = 'county_fips', by.y = 'COUNTY_CODE', all.x = TRUE)
+
+
 county_ref[is.na(county_ref)] <- 0
+colnames(county_ref) = c('county_fips', 'county_name', 'state', 'POC_1', 'POC_any')
+write.csv(county_ref, file = '~/covid/county_sensor_counts.csv', row.names = FALSE)
 
-
+write.csv(sensor_locations, file = '~/covid/sensor_locations_POC_any.csv', row.names = FALSE)
+write.csv(poc1_locations, file = '~/covid/sensor_locations_POC_1.csv', row.names =FALSE)
 
 # In counties with multiple sensors, how well do they agree?
 
