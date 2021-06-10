@@ -104,21 +104,8 @@ timeplt <- ggplot(births_dateplt, aes(as.Date(start_date), date_order, color = c
         panel.background=element_rect(fill='white'), 
         panel.grid = element_line(color='grey', size=.1)) 
 
-
-timeplt
-
 ggsave(timeplt, file = 'timeplt.png')
 
-
-births_postcovid = births %>% filter(covid_start_in == 'tri_0')
-
-births_postcovid$preterm[is.na(births_postcovid$preterm)] <- 0
-a = epitable(births_postcovid$any_mat_covid, births_postcovid$preterm)
-epitab(a, method = 'oddsratio')
-
-mytab <- CreateTableOne(vars = c(fact_cols, 'wic'), data = births, factorVars = fact_cols)
-
-mytab
 
 tbl1print = print(mytab)
 write.csv(tbl1print, file = 'tbl1print.csv')
@@ -128,61 +115,37 @@ write.csv(points_file, file = '/Volumes/Padlock/covid/lookup_points.csv', row.na
 
 
 
-# read in raster value extracts
-filenames = list.files('/Volumes/Padlock/covid/values_month_summed', full.names = TRUE)
-extract_vals = do.call('cbind', lapply(filenames, read.csv, header = TRUE))
-colnames(extract_vals) = c('m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12')
-extract_vals = cbind(points_file, extract_vals)
-
-# compute CUMULATIVE exposure for each pregnancy
-# calculate complete months
 exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB)
-
-# code months as no pregnant days (0), some pregnant days, all pregnant days
-#exposure_calc <- exposure_calc %>% mutate(month_cncp = paste('m', month(start_date), sep = ''),
- #                        month_deliv = paste('m', month(baby_DOB), sep = ''),
-  #                       full_cncp = case_when(day(start_date) == 1 ~ TRUE, TRUE ~ FALSE),
-   #                      full_deliv = case_when(baby_DOB == ceiling_date(baby_DOB, 'month') - days(1) ~ TRUE, TRUE ~ FALSE))
-
-earliest_date = ymd('2020-01-01')
-latest_date = ymd('2021-01-31')
-
-#date_cols = seq.Date(earliest_date, latest_date, by = 'month')
-#date_cols = format(date_cols, '%Y-%m')
-#date_cols = paste('X', date_cols, sep = '')
-
- #exposure_calc[,date_cols] = NA
- 
- 
- #mini_exp = sample_n(exposure_calc, 20000)
- 
- # THIS IS SLOWWWWW
-# test <- exposure_calc %>% 
-#   rowwise() %>%
-#   do(data.frame(VS_unique = .$VS_unique, longitude = .$longitude, latitude = .$latitude, start_date = .$start_date, baby_DOB =.$baby_DOB,
-#                 month = seq(earliest_date, latest_date, by = 'month')))
-
 exposure_calc <- exposure_calc %>% filter(!is.na(start_date) & !is.na(baby_DOB) & !is.na(latitude) & !is.na(longitude))
-#mini_exp <- mini_exp %>% filter(!is.na(start_date))
-test1 <- exposure_calc %>% 
-   rowwise() %>%
-   do(data.frame(VS_unique = .$VS_unique, longitude = .$longitude, latitude = .$latitude, start_date = .$start_date, baby_DOB =.$baby_DOB,
-                 month = seq(floor_date(.$start_date, "month"), ceiling_date(.$baby_DOB, 'month') - days(1), by = 'month')))
+write.csv(exposure_calc, file = '/Volumes/Padlock/covid/data/births_exposure_calc.csv', row.names = FALSE)
 
-write.csv(test1, file = '/Volumes/Padlock/covid/20210602exposure_calc.csv', row.names = FALSE)
 
-exposure_calc = test1
+# read and compare exposures with POC == 1 and any POC
+poc1 = read.csv('/Volumes/Padlock/covid/data/cumulative_exposure_POC1_pass1.csv')
+#cut out extreme and missing values for initial comparison; follow up with these later
+poc1 <- poc1 %>% mutate(poc_type = 'POC_1') %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
+pocany = read.csv('/Volumes/Padlock/covid/data/cumulative_exposure_POCany_pass1.csv')
+pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
 
-test <- mini_exp
+poc = rbind(poc1, pocany)
 
-extract_values <- extract_vals %>% pivot_longer(cols = starts_with("m"),
-                                                names_to = "month",
-                                                names_prefix = "m",
-                                                values_to = "values")
+pochist <- ggplot() + 
+  geom_density(data = poc, aes(x = pm25, group = poc_type, fill = poc_type, color = poc_type), alpha = .5) +
+  scale_color_manual(values = c('#009d9a', '#b28600')) + 
+  scale_fill_manual(values = c('#009d9a', '#b28600')) +
+  theme_minimal() +
+  xlab("Cumulative PM2.5 Exposure")
+pochist
 
-extract_values <- extract_values %>% mutate(year_month = ym(paste('2020', month , sep = '')))
+ggsave(pochist, file = '/Volumes/Padlock/covid/images/20210609_poc1_vs_any_hist.png', dpi = 300)
 
-#mini_exp = exposure_calc[sample(nrow(exposure_calc), 500), ]
-exposure_calc <- exposure_calc %>% dplyr::rename(year_month = month)
+poc <- poc %>% dplyr::select(-X)
+pocw <- poc %>% pivot_wider(id_cols = VS_unique, names_from = poc_type, values_from = pm25) %>%
+  mutate(pmdiff_abs = abs(POC_1 - POC_any))
+print(mean(pocw$pmdiff_abs, na.rm = TRUE))
+print(sd(pocw$pmdiff_abs, na.rm = TRUE))
+print(max(abs(pocw$pmdiff_abs), na.rm = TRUE))
 
-t <- left_join(exposure_calc, extract_values)
+write.csv(pocw, file= '/Volumes/Padlock/covid/data/20210609_exposures_by_POC.csv', row.names = FALSE)
+
+

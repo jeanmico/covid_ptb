@@ -28,7 +28,7 @@ rastname_base = '~/covd/output/rasts_POC_1/'
 
 sensor_locate <- function(sensors) {
   locations <- sensors %>% 
-    dplyr::select(Site.ID, Site.Name, CBSA_CODE, CBSA_NAME, STATE_CODE, STATE, COUNTY_CODE, COUNTY, SITE_LATITUDE, SITE_LONGITUDE) %>%
+    dplyr::select(Site.ID, Site.Name, POC, CBSA_CODE, CBSA_NAME, STATE_CODE, STATE, COUNTY_CODE, COUNTY, SITE_LATITUDE, SITE_LONGITUDE) %>%
     distinct()
   return(locations)
 }
@@ -69,6 +69,10 @@ write.csv(county_ref, file = '~/covid/county_sensor_counts.csv', row.names = FAL
 
 write.csv(sensor_locations, file = '~/covid/sensor_locations_POC_any.csv', row.names = FALSE)
 write.csv(poc1_locations, file = '~/covid/sensor_locations_POC_1.csv', row.names =FALSE)
+
+minpoc <- sensor_locations %>% group_by(COUNTY_CODE, COUNTY) %>%
+  summarise(minimum_POC = min(POC)) %>% filter(minimum_POC >1)
+write.csv(minpoc, file = '~/covid/minimum_POC.csv', row.names = FALSE)
 
 # In counties with multiple sensors, how well do they agree?
 
