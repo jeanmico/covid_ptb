@@ -23,6 +23,9 @@ fp_img <<- paste(fp_base, 'images/', sep = '')
 births_fp = paste(fp_data, 'Deb_COVID_set_022621.csv', sep = '')
 decodes_fp = paste(fp_data, 'colnames_raw.csv', sep = '')
 acs_fp = paste(fp_data, 'acs_data_5yr_2019.csv', sep = '')
+factor_defs_fp = paste(fp_data, 'factor_defs.csv', sep = '')
+factor_comps_fp = paste(fp_data, 'factor_components.csv', sep = '')
+pocany_fp = paste(fp_data, 'cumulative_exposure_POCany_pass1.csv', sep = '')
 
 ## FUNCTIONS #############
 
@@ -62,6 +65,12 @@ timeline_plot <- function(df) {
 births_raw = read.csv(births_fp)
 decodes = read.csv(decodes_fp)
 acs = read.csv(acs_fp)
+pocany = read.csv(pocany_fp)
+
+factor_defs = read.csv(factor_defs_fp)
+factor_comps = read.csv(factor_comps_fp)
+
+
 
 # process the data, factorize where needed, determine sample sizes
 dropcols <- decodes %>% filter(keep == 0) %>% dplyr::select(rawname) # drop unneeded columns
@@ -81,8 +90,7 @@ births <- births_tmp
 
 ### create factor columns ############
 # condense multiple binary columns into a single factor column
-factor_defs = read.csv('factor_defs.csv')
-factor_comps = read.csv('factor_components.csv')
+
 
 fact_cols = factor_defs$factname
 
@@ -124,6 +132,8 @@ births[is.na(births)] <- 0
 #births_tmp <- births
 #births_tmp <- merge(births, acs, by = 'census_tract')
 
+
+
 ### determine pregnancy start date ##########
 births <- births %>% mutate(baby_DOB = mdy(baby_DOB)) %>%
   mutate(start_date = ymd(baby_DOB) - weeks(gest_weeks))
@@ -137,6 +147,12 @@ births <- births %>% mutate(covid_start_in = case_when(
   covid_start_date < baby_DOB ~ 'tri_3',
   TRUE ~ 'post_partum'))
 
+### integrate exposure data
+pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
+births_exposure <- merge(births, pocany, by = "VS_unique")
+births_exposure <- births_exposure %>% 
+  filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
+  mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
 
 ### write a coordinates file
 exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB)
@@ -153,56 +169,12 @@ write.csv(tbl1print, file = output_name('tbl1print'))
 
 timeline_plot(births)
 
-
-## ASSIGN EXPOSURE ########
-# read and compare exposures with POC == 1 and any POC
-poc1 = read.csv('/Volumes/Padlock/covid/data/cumulative_exposure_POC1_pass1.csv')
-#cut out extreme and missing values for initial comparison; follow up with these later
-poc1 <- poc1 %>% mutate(poc_type = 'POC_1') %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
-pocany = read.csv('/Volumes/Padlock/covid/data/cumulative_exposure_POCany_pass1.csv')
-pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
-
-poc = rbind(poc1, pocany)
-
-pochist <- ggplot() + 
-  geom_density(data = poc, aes(x = pm25, group = poc_type, fill = poc_type, color = poc_type), alpha = .5) +
-  scale_color_manual(values = c('#009d9a', '#b28600')) + 
-  scale_fill_manual(values = c('#009d9a', '#b28600')) +
-  theme_minimal() +
-  xlab("Cumulative PM2.5 Exposure")
-pochist
-
-ggsave(pochist, file = '/Volumes/Padlock/covid/images/20210609_poc1_vs_any_hist.png', dpi = 300)
-
-poc <- poc %>% dplyr::select(-X)
-
-pocw <- poc %>% pivot_wider(id_cols = VS_unique, names_from = poc_type, values_from = pm25) %>%
-  mutate(pmdiff_abs = abs(POC_1 - POC_any))
-print(mean(pocw$pmdiff_abs, na.rm = TRUE))
-print(sd(pocw$pmdiff_abs, na.rm = TRUE))
-print(max(abs(pocw$pmdiff_abs), na.rm = TRUE))
-
-write.csv(pocw, file= '/Volumes/Padlock/covid/data/20210609_exposures_by_POC.csv', row.names = FALSE)
-
-set.seed(100)
-library(stringi)
-newids = stri_rand_strings(nrow(pocw), 8)
-pocw <- pocw %>% mutate(new_id = newids)
-pocw_scrambled = pocw %>% dplyr::select(-VS_unique)
-write.csv(pocw_scrambled, file = '~/covid/data/exposures_by_POC.csv', row.names = FALSE)
-
-
-births_exposure <- merge(births, pocany, by = "VS_unique")
-births_exposure <- births_exposure %>% 
-  filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
-  mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
-
 exposure_plot <- ggplot(data = births_exposure, aes(x = pm25mean, y = ..density..)) + 
   geom_density() +
   theme_minimal() +
   xlab('Mean PM2.5 Exposure')
 exposure_plot
-ggsave(exposure_plot, file = '/Volumes/Padlock/covid/images/20200610_meanpm25_density.png', dpi = 300)
+ggsave(exposure_plot, file = image_name('mean_pm25_density_fullsample'), dpi = 300)
 
 
 ## ANALYSIS #######
