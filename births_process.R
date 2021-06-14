@@ -7,6 +7,7 @@ library(epitools)
 library(withr)
 library(survival)
 library(caTools)
+library(Hmisc)
 
 ## CONSTANTS AND GLOBALS ###########
 
@@ -25,7 +26,7 @@ decodes_fp = paste(fp_data, 'colnames_raw.csv', sep = '')
 acs_fp = paste(fp_data, 'acs_data_5yr_2019.csv', sep = '')
 factor_defs_fp = paste(fp_data, 'factor_defs.csv', sep = '')
 factor_comps_fp = paste(fp_data, 'factor_components.csv', sep = '')
-pocany_fp = paste(fp_data, 'cumulative_exposure_POCany_pass1.csv', sep = '')
+pocany_fp = paste(fp_data, 'cumulative_exposure_POCany_pass2.csv', sep = '')
 
 ## FUNCTIONS #############
 
@@ -129,6 +130,10 @@ births[is.na(births)] <- 0
 #acs <- acs %>% mutate(census_tract = with_options(c(scipen=999), str_pad(GEOID, 11, "left", pad = "0"))) %>% dplyr::select(-c(variable, codename))
 #acs <- acs %>% pivot_wider(names_from = rename, names_sep = '_', values_from = c(estimate, moe))
 
+births <- births %>% mutate(county = str_sub(with_options(c(scipen=999), 
+                                                          str_pad(census_block, 15, "left", pad = "0")), 
+                                             1,  5))
+
 #births_tmp <- births
 #births_tmp <- merge(births, acs, by = 'census_tract')
 
@@ -149,8 +154,8 @@ births <- births %>% mutate(covid_start_in = case_when(
 
 ### integrate exposure data
 pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
-births_exposure <- merge(births, pocany, by = "VS_unique")
-births_exposure <- births_exposure %>% 
+births <- merge(births, pocany, by = "VS_unique")
+births <- births_exposure %>% 
   filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
   mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
 
@@ -165,17 +170,29 @@ mytab <- CreateTableOne(vars = c(fact_cols), data = births, factorVars = fact_co
 tbl1print = print(mytab)
 write.csv(tbl1print, file = output_name('tbl1print'))
 
-## TIMELINE PLOT #############
+## PLOTS #############
 
 timeline_plot(births)
 
-exposure_plot <- ggplot(data = births_exposure, aes(x = pm25mean, y = ..density..)) + 
+exposure_plot <- ggplot(data = births, aes(x = pm25mean, y = ..density..)) + 
   geom_density() +
   theme_minimal() +
   xlab('Mean PM2.5 Exposure')
 exposure_plot
 ggsave(exposure_plot, file = image_name('mean_pm25_density_fullsample'), dpi = 300)
 
+# compute mean air exposure by county and write output to generate a figure
+
+ ## changing births file!!!! this should be moved!
+
+
+pm25_county_mean <- births %>% group_by(county) %>%
+  summarise(pm25county_mean = mean(pm25mean),
+            pm25county_min = min(pm25mean),
+            pm25county_max = max(pm25mean),
+            pm25county_sd = sd(pm25mean),
+            county_births_count = n())
+write.csv(pm25_county_mean, file = output_name('county_summary'), row.names = FALSE)
 
 ## ANALYSIS #######
 ## STEP 1: test the effects of air pollution on the outcome of PTB
@@ -189,7 +206,41 @@ s1_test <- births_exposure[-s1_id]
 s1_logit <- glm(preterm ~ pm25mean, family = binomial('logit'), data = s1_train)
 s1_logit_full <- glm(preterm ~ race + female + pm25mean, family = binomial('logit'), data = s1_train)
 
+# separate air exposure into quartiles
+quartcut = cut2(births$pm25mean, g = 4, onlycuts = TRUE)
+quartcut
 
+tricut = cut2(births$pm25mean, g = 3, onlycuts = TRUE)
+tricut
 
+# both quartiles and tertiles seem very tight
+# check that we have events and nonevents in all groups
 
+births <- births %>% mutate(pm25_tertile = case_when(
+  pm25mean < tricut[2] ~ 'tertile1',
+  pm25mean < tricut[3] ~ 'tertile2',
+  TRUE ~ 'tertile3'
+  ))
+births$pm25_tertile <- as.factor(births$pm25_tertile)
 
+s2_logit <- glm(preterm ~ pm25_tertile, data = births)
+summary(s2_logit)
+
+# calculate the time at event; if not preterm, use 37wks = 259 days
+births <- births %>% mutate(event_time = case_when(
+  gest_weeks > 37 ~ 37,
+  TRUE ~ gest_weeks
+  ))
+
+# Basic Cox Proportional Hazards model, not adjusting for COVID status
+cox_base <- coxph(Surv(event_time, preterm) ~ race + ipi + mom_age + bmi + insurance + pn_care + inf_sex + pm25_tertile, data = births)
+cox_base <- coxph(Surv(event_time, preterm) ~ inf_sex, data = births)
+summary(cox_base)
+
+## check residuals of basic model
+sr <- cox.zph(cox_base)
+plot(sr)
+sr
+# plot errors...are there any categories for whom no PTB events occurred?
+dr2 <- ggcoxdiagnostics(cox_base, type = 'deviance', linear.predictions = FALSE, ggtheme = theme_bw())
+dr2
