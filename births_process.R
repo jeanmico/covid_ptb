@@ -22,6 +22,7 @@ fp_img <<- paste(fp_base, 'images/', sep = '')
 
 
 births_fp = paste(fp_data, 'Deb_COVID_set_022621.csv', sep = '')
+census_tracts_fp = paste(fp_data, 'fix_census_062421.csv', sep = '')
 decodes_fp = paste(fp_data, 'colnames_raw.csv', sep = '')
 acs_fp = paste(fp_data, 'acs_data_5yr_2019.csv', sep = '')
 factor_defs_fp = paste(fp_data, 'factor_defs.csv', sep = '')
@@ -64,6 +65,7 @@ timeline_plot <- function(df) {
 
 ### process files #####
 births_raw = read.csv(births_fp)
+census_tracts = read.csv(census_tracts_fp)
 decodes = read.csv(decodes_fp)
 acs = read.csv(acs_fp)
 pocany = read.csv(pocany_fp)
@@ -71,7 +73,9 @@ pocany = read.csv(pocany_fp)
 factor_defs = read.csv(factor_defs_fp)
 factor_comps = read.csv(factor_comps_fp)
 
+births_raw <- births_raw %>% dplyr::select(-PGB_CENSUS_BLOCK_193)
 
+births_raw <- merge(births_raw, census_tracts)
 
 # process the data, factorize where needed, determine sample sizes
 dropcols <- decodes %>% filter(keep == 0) %>% dplyr::select(rawname) # drop unneeded columns
@@ -120,22 +124,24 @@ for (myfact in fact_cols) {
 births <- births_tmp
 births[is.na(births)] <- 0
 
+births <- births %>% filter(singleton == 1)
+
 ### integrate ACS data ########
 # add string variable for census tract id
-#births <- births %>% mutate(census_tract = str_sub(with_options(c(scipen=999), 
-#                                                                str_pad(census_block, 15, "left", pad = "0")), 
-#                                                   1,  11))
+births <- births %>% mutate(census_tract = str_sub(with_options(c(scipen=999), 
+                                                                str_pad(census_block, 15, "left", pad = "0")), 
+                                                  1,  11))
 
 # add string for ACS census id and pivot wider
-#acs <- acs %>% mutate(census_tract = with_options(c(scipen=999), str_pad(GEOID, 11, "left", pad = "0"))) %>% dplyr::select(-c(variable, codename))
-#acs <- acs %>% pivot_wider(names_from = rename, names_sep = '_', values_from = c(estimate, moe))
+acs <- acs %>% mutate(census_tract = with_options(c(scipen=999), str_pad(GEOID, 11, "left", pad = "0"))) %>% dplyr::select(-c(variable, codename))
+acs <- acs %>% pivot_wider(names_from = rename, names_sep = '_', values_from = c(estimate, moe))
 
 births <- births %>% mutate(county = str_sub(with_options(c(scipen=999), 
                                                           str_pad(census_block, 15, "left", pad = "0")), 
                                              1,  5))
 
-#births_tmp <- births
-#births_tmp <- merge(births, acs, by = 'census_tract')
+births_tmp <- births
+births_tmp <- merge(births, acs, by = 'census_tract')
 
 
 
@@ -223,8 +229,16 @@ births <- births %>% mutate(pm25_tertile = case_when(
   ))
 births$pm25_tertile <- as.factor(births$pm25_tertile)
 
+births <- births %>% mutate(pm25binary = case_when(
+  pm25mean < 15.5 ~ 0,
+  TRUE ~ 1
+  ))
+
 s2_logit <- glm(preterm ~ pm25_tertile, data = births)
 summary(s2_logit)
+s1_logit <- glm(preterm ~ pm25mean, data = births)
+summary(s1_logit)
+
 
 # calculate the time at event; if not preterm, use 37wks = 259 days
 births <- births %>% mutate(event_time = case_when(
@@ -233,14 +247,23 @@ births <- births %>% mutate(event_time = case_when(
   ))
 
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
-cox_base <- coxph(Surv(event_time, preterm) ~ race + ipi + mom_age + bmi + insurance + pn_care + inf_sex + pm25_tertile, data = births)
-cox_base <- coxph(Surv(event_time, preterm) ~ inf_sex, data = births)
+cox_base <- coxph(Surv(gest_weeks, preterm) ~  ipi + mom_age + bmi  + pn_care + inf_sex + pm25mean + strata(race, insurance), data = births)
+#cox_base <- coxph(Surv(event_time, preterm) ~ inf_sex, data = births)
 summary(cox_base)
 
 ## check residuals of basic model
 sr <- cox.zph(cox_base)
-plot(sr)
+plot(sr[8]) # plot errors even on simple model
 sr
 # plot errors...are there any categories for whom no PTB events occurred?
-dr2 <- ggcoxdiagnostics(cox_base, type = 'deviance', linear.predictions = FALSE, ggtheme = theme_bw())
+dr2 <- ggcoxdiagnostics(cox_base, type = 'deviance', linear.predictions = FALSE, se = FALSE, ggtheme = theme_bw())
 dr2
+
+contingency_pm25 <- epitable(births$pm25_tertile, births$preterm)
+pm25_rr = epitab(contingency_pm25, method = 'riskratio')
+
+contingency_covid <- epitable(births$any_mat_covid, births$preterm)
+covid_rr <- epitab(contingency_covid, method = 'riskratio')
+
+contingency_pm25bin <- epitable(births$pm25binary, births$preterm)
+pm25_rr = epitab(contingency_pm25bin, method = 'riskratio')
