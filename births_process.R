@@ -246,6 +246,21 @@ births <- births %>% mutate(event_time = case_when(
   TRUE ~ gest_weeks
   ))
 
+
+# histogram of PM2.5 values to identify extremes
+pmhist_breaks = read.csv('/Volumes/Padlock/covid/output/hist_breaks.csv')
+pmhist_counts = read.csv('/Volumes/Padlock/covid/output/hist_counts.csv')
+
+
+pm_freq = data.frame(pmhist_breaks$x[1:nrow(pmhist_breaks) -1], pmhist_counts$x)
+colnames(pm_freq) = c('pm_val', 'counts')
+
+pmhist = ggplot(pm_freq, aes(pm_val, counts)) + geom_col(width = 10) + 
+  scale_y_log10() + theme_bw() + xlab('PM2.5 Concentration (ug/m3)') + 
+  ylab('log(count)')
+pmhist
+
+
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
 cox_base <- coxph(Surv(gest_weeks, preterm) ~  ipi + mom_age + bmi  + pn_care + inf_sex + pm25mean + strata(race, insurance), data = births)
 #cox_base <- coxph(Surv(event_time, preterm) ~ inf_sex, data = births)
