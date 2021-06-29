@@ -8,6 +8,7 @@ library(withr)
 library(survival)
 library(caTools)
 library(Hmisc)
+library(survminer)
 
 ## CONSTANTS AND GLOBALS ###########
 
@@ -20,7 +21,7 @@ fp_data <<- paste(fp_base, 'data/', sep = '')
 fp_out <<- paste(fp_base, 'output/', sep = '')
 fp_img <<- paste(fp_base, 'images/', sep = '')
 
-
+# filenames
 births_fp = paste(fp_data, 'Deb_COVID_set_022621.csv', sep = '')
 census_tracts_fp = paste(fp_data, 'fix_census_062421.csv', sep = '')
 decodes_fp = paste(fp_data, 'colnames_raw.csv', sep = '')
@@ -39,6 +40,11 @@ image_name <- function(fname) {
 output_name <- function(fname) {
   return(paste(fp_out, Sys.Date(), '_', fname, '.csv', sep = ''))
 }
+
+factorize_data <- function(df){
+  
+}
+
 
 timeline_plot <- function(df) {
   births_dateplt <- df %>% arrange(desc(start_date)) %>% mutate(date_order = row_number())
@@ -88,9 +94,7 @@ names(name_vec) <- keepcols$varname
 
 # rename variables to make things clearer
 births_tmp <- births_tmp %>% dplyr::rename(name_vec[name_vec %in% names(births_tmp)])
-
 births_tmp <- births_tmp %>% mutate(female = case_when(male == 0 ~1, TRUE~0))
-
 births <- births_tmp
 
 ### create factor columns ############
@@ -142,7 +146,7 @@ births <- births %>% mutate(county = str_sub(with_options(c(scipen=999),
 
 births_tmp <- births
 births_tmp <- merge(births, acs, by = 'census_tract')
-
+births <- births_tmp
 
 
 ### determine pregnancy start date ##########
@@ -161,8 +165,8 @@ births <- births %>% mutate(covid_start_in = case_when(
 ### integrate exposure data
 pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
 births <- merge(births, pocany, by = "VS_unique")
-births <- births_exposure %>% 
-  filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
+births <- births %>% 
+#  filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
   mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
 
 ### write a coordinates file
@@ -201,9 +205,6 @@ pm25_county_mean <- births %>% group_by(county) %>%
 write.csv(pm25_county_mean, file = output_name('county_summary'), row.names = FALSE)
 
 ## ANALYSIS #######
-## STEP 1: test the effects of air pollution on the outcome of PTB
-
-# start with a simple table
 
 s1_train = sample_frac(births_exposure, .75)
 s1_id <- as.numeric(rownames(s1_train))
@@ -260,16 +261,58 @@ pmhist = ggplot(pm_freq, aes(pm_val, counts)) + geom_col(width = 10) +
   ylab('log(count)')
 pmhist
 
+library(janitor)
+frq_pn <- births %>% tabyl(race, pn_care, insurance)
+
+frq_bmi <- births %>% tabyl(race, bmi, insurance)
 
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
-cox_base <- coxph(Surv(gest_weeks, preterm) ~  ipi + mom_age + bmi  + pn_care + inf_sex + pm25mean + strata(race, insurance), data = births)
-#cox_base <- coxph(Surv(event_time, preterm) ~ inf_sex, data = births)
+cox_base <- coxph(Surv(gest_weeks, preterm) ~  ipi + mom_age + bmi + inf_sex + pspline(pm25mean, df = 4) + strata(race, insurance, pn_care), data = births)
 summary(cox_base)
-
-## check residuals of basic model
 sr <- cox.zph(cox_base)
-plot(sr[8]) # plot errors even on simple model
+
+
+
+# Plot the Schoenfeld Residuals
+srplt = ggcoxzph(sr, df = 3)  # df >4 leads to an NA/NaN/Inf error
+
+png(file = image_name('schoenfeld_test'), width = 1000, height = 900)
+srplt
+dev.off()
+
+srplt
 sr
+
+cox_ps = coxph(Surv(gest_weeks, preterm) ~ pspline(pm25mean, df = 4), data = births)
+ps_termplot = termplot(cox_ps, term = 1, se=T, plot = F)
+
+ps_df = data.frame(ps_termplot$pm25mean)
+ps_df <- ps_df %>% mutate(hr = exp(y),
+                          lci = exp(y - 196*se),
+                          uci = exp(y + 1.96*se))
+
+
+plot(x = newdf$x, y = newdf$hr,type = 'l', col = "red",xlab = "Mean PM2.5",
+     ylab = "Hazard ratio for PM2.5 with the Cox model using psplines")
+lines(x = newdf$x, y = newdf$lci, col = "blue")
+lines(x = newdf$x, y = newdf$uci, col = "blue")
+abline(h = 1, col = "gray")
+
+ps_plot <- ggplot(ps_df, aes(x = x, y = hr)) + 
+  geom_line(size = 1.5) + 
+  geom_line(data=ps_df, aes(x = x, y = lci), color = '#009d9a', linetype = 'dashed') + 
+  geom_line(data=ps_df, aes(x = x, y = uci), color = '#009d9a', linetype = 'dashed') +
+  xlab("Mean PM2.5") + 
+  ylab("Hazard ratio for PM2.5 using psplines") +
+  theme_bw()
+ps_plot
+ggsave(ps_plot, file= image_name('hazard_psplines_plot'))
+
+
+
+
+
+
 # plot errors...are there any categories for whom no PTB events occurred?
 dr2 <- ggcoxdiagnostics(cox_base, type = 'deviance', linear.predictions = FALSE, se = FALSE, ggtheme = theme_bw())
 dr2
