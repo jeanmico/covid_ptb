@@ -1,3 +1,11 @@
+# This is the main code for the COVID project.
+#   exposure is computed elsewhere.
+# This code
+#   reads data files for births, exposure, ACS data
+#   processes data
+#   performs analyses
+#   generates tables, plots
+
 ## LIBRARIES #################
 
 library(tidyverse)
@@ -22,18 +30,19 @@ fp_data <<- paste(fp_base, 'data/', sep = '')
 fp_out <<- paste(fp_base, 'output/', sep = '')
 fp_img <<- paste(fp_base, 'images/', sep = '')
 
-# filenames
+# data filenames
 births_fp = paste(fp_data, 'Deb_COVID_set_022621.csv', sep = '')
 census_tracts_fp = paste(fp_data, 'fix_census_062421.csv', sep = '')
 decodes_fp = paste(fp_data, 'colnames_raw.csv', sep = '')
 acs_fp = paste(fp_data, 'acs_data_5yr_2019.csv', sep = '')
 factor_defs_fp = paste(fp_data, 'factor_defs.csv', sep = '')
 factor_comps_fp = paste(fp_data, 'factor_components.csv', sep = '')
+coldict_fp = paste(fp_data, 'columns_dict.csv', sep = '')
 pocany_fp = paste(fp_data, 'cumulative_exposure_POCany_pass2.csv', sep = '')
 
 ## FUNCTIONS #############
 
-# functions for consistent naming; prevent overwriting with Sys.Date()
+# functions for consistently naming output files; prevent overwriting with Sys.Date()
 image_name <- function(fname) {
   return(paste(fp_img, Sys.Date(), '_', fname, '.png', sep = ''))
 }
@@ -42,8 +51,29 @@ output_name <- function(fname) {
   return(paste(fp_out, Sys.Date(), '_', fname, '.csv', sep = ''))
 }
 
-factorize_data <- function(df){
+factorize_data <- function(factors, df){
+  fact_cols = factors$factname
   
+  for (myfact in fact_cols) {
+    fact_default <- filter(factors, factname == myfact)$default
+    print(myfact)
+    
+    df[myfact] = fact_default
+    
+    components <- filter(factor_comps, factname == myfact)$varname
+    
+    for (colname in components)({
+      coldata=df[,colname]
+      df[[myfact]][which(coldata==1)]=colname
+    })
+    
+    mylevels <- c(fact_default, components)
+    mylevels = mylevels[!duplicated(mylevels)]
+    
+    # convert the column to a factor and set the default
+    df[[myfact]] <- factor(df[[myfact]], levels = mylevels)
+  }
+  return(df)
 }
 
 
@@ -70,70 +100,46 @@ timeline_plot <- function(df) {
 
 ## START #################
 
-### process files #####
-births_raw = read.csv(births_fp)
-census_tracts = read.csv(census_tracts_fp)
-decodes = read.csv(decodes_fp)
-acs = read.csv(acs_fp)
-pocany = read.csv(pocany_fp)
+### read data files #####
+births_raw = read.csv(births_fp)  # births data
+census_tracts = read.csv(census_tracts_fp)  # corrected census tracts
+acs = read.csv(acs_fp)  # data from American Community Survey 2015-19
+pocany = read.csv(pocany_fp)  # PM2.5 exposure data
 
-factor_defs = read.csv(factor_defs_fp)
-factor_comps = read.csv(factor_comps_fp)
+### read data dictionaries #####
+factor_defs = read.csv(factor_defs_fp)  # factor definitions (names, missing, default)
+factor_comps = read.csv(factor_comps_fp)  # factor components
+decodes = read.csv(decodes_fp)  # column renames
+coldict = read.csv(coldict_fp)  # column dictionary
 
-births_raw <- births_raw %>% dplyr::select(-PGB_CENSUS_BLOCK_193)
-
-births_raw <- merge(births_raw, census_tracts)
+### process files ####
+births_raw <- births_raw %>% dplyr::select(-PGB_CENSUS_BLOCK_193)  # remove truncated census tract variable
+births_raw <- merge(births_raw, census_tracts)  # add correct census tract
 
 # process the data, factorize where needed, determine sample sizes
 dropcols <- decodes %>% filter(keep == 0) %>% dplyr::select(rawname) # drop unneeded columns
-births_tmp <- births_raw %>% dplyr::select(-(dropcols$rawname))
+births <- births_raw %>% dplyr::select(-(dropcols$rawname))
 keepcols <- decodes%>% filter(keep == 1)
 
-# create a named vector to use with dplyr::rename
-name_vec <- keepcols$rawname
+# rename variables for readability
+name_vec <- keepcols$rawname  # create a named vector to use with dplyr::rename
 names(name_vec) <- keepcols$varname
+births <- births %>% dplyr::rename(name_vec[name_vec %in% names(births)])
 
-# rename variables to make things clearer
-births_tmp <- births_tmp %>% dplyr::rename(name_vec[name_vec %in% names(births_tmp)])
-births_tmp <- births_tmp %>% mutate(female = case_when(male == 0 ~1, TRUE~0))
-births <- births_tmp
+births <- births %>% mutate(female = case_when(male == 0 ~1, TRUE~0))  # add missing sex variable
+
 
 ### create factor columns ############
 # condense multiple binary columns into a single factor column
-
-
-fact_cols = factor_defs$factname
-
-births_tmp <- births
-
-for (myfact in fact_cols) {
-  fact_default <- filter(factor_defs, factname == myfact)$default
-  print(myfact)
-  
-  births_tmp[myfact] = fact_default
-  
-  components <- filter(factor_comps, factname == myfact)$varname
-  
-  for (colname in components)({
-    coldata=births_tmp[,colname]
-    births_tmp[[myfact]][which(coldata==1)]=colname
-  })
-  
-  mylevels <- c(fact_default, components)
-  mylevels = mylevels[!duplicated(mylevels)]
-  
-  # convert the column to a factor and set the default
-  births_tmp[[myfact]] <- factor(births_tmp[[myfact]], levels = mylevels)
-}
-
-births <- births_tmp
+births_tmp <- factorize_data(factor_defs, births)
 
 # collapse any factors we wish to combine
-births$insurance = fct_collapse(births$insurance, all_other_pay = c("all_other_pay", "self_pay"))
+births_tmp$insurance = fct_collapse(births_tmp$insurance, all_other_pay = c("all_other_pay", "self_pay"))
+births <- births_tmp
 
-births[is.na(births)] <- 0
+births[is.na(births)] <- 0  # this is how the data are coded 
 
-births <- births %>% filter(singleton == 1)
+births <- births %>% filter(singleton == 1)  # select only singleton births
 
 ### integrate ACS data ########
 # add string variable for census tract id
@@ -149,9 +155,7 @@ births <- births %>% mutate(county = str_sub(with_options(c(scipen=999),
                                                           str_pad(census_block, 15, "left", pad = "0")), 
                                              1,  5))
 
-births_tmp <- births
-births_tmp <- merge(births, acs, by = 'census_tract')
-births <- births_tmp
+births <- merge(births, acs, by = 'census_tract')
 
 
 ### determine pregnancy start date ##########
@@ -171,11 +175,7 @@ births <- births %>% mutate(covid_start_in = case_when(
 pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
 births <- merge(births, pocany, by = "VS_unique")
 births <- births %>% 
-#  filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
   mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
-
-
-#births <- births %>% mutate(housing_burden = estimate_household_income/estimate_housing_costs)
 
 births <- births %>% mutate(year_mth_start = str_sub(start_date, 1, 7))
 births <- births %>% mutate(year_mth_fact = as.factor(year_mth_start))
@@ -184,6 +184,7 @@ births <- births %>% mutate(year_mth_fact = as.factor(year_mth_start))
 datelist = sort(unique(births$year_mth_start))
 births <- births %>% mutate(year_mth_ord = match(year_mth_start, datelist))
 
+## END OF VARIABLE CREATION AND SAMPLE SELECTION ###
 
 ### write a coordinates file
 exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB)
@@ -193,13 +194,16 @@ write.csv(exposure_calc, file = output_name('exposure_coordinates'), row.names =
 # write a file of the processed columns
 write.csv(colnames(births), "/Volumes/Padlock/covid/data/columns_processed.csv", row.names = FALSE)
 
-### table 1 ###############
+
+
+
+### TABLE 1 ###############
 
 mytab <- CreateTableOne(vars = c(fact_cols), data = births, factorVars = fact_cols)
 tbl1print = print(mytab)
 write.csv(tbl1print, file = output_name('tbl1print'))
 
-## PLOTS #############
+## PLOTS PT1 #############
 
 timeline_plot(births)
 
@@ -210,11 +214,8 @@ exposure_plot <- ggplot(data = births, aes(x = pm25mean, y = ..density..)) +
 exposure_plot
 ggsave(exposure_plot, file = image_name('mean_pm25_density_fullsample'), dpi = 300)
 
+
 # compute mean air exposure by county and write output to generate a figure
-
- ## changing births file!!!! this should be moved!
-
-
 pm25_county_mean <- births %>% group_by(county) %>%
   summarise(pm25county_mean = mean(pm25mean),
             pm25county_min = min(pm25mean),
@@ -223,7 +224,19 @@ pm25_county_mean <- births %>% group_by(county) %>%
             county_births_count = n())
 write.csv(pm25_county_mean, file = output_name('county_summary'), row.names = FALSE)
 
+# histogram of PM2.5 values to identify extremes
+pmhist_breaks = read.csv('/Volumes/Padlock/covid/output/hist_breaks.csv')
+pmhist_counts = read.csv('/Volumes/Padlock/covid/output/hist_counts.csv')
 
+
+pm_freq = data.frame(pmhist_breaks$x[1:nrow(pmhist_breaks) -1], pmhist_counts$x)
+colnames(pm_freq) = c('pm_val', 'counts')
+
+pmhist = ggplot(pm_freq, aes(pm_val, counts)) + geom_col(width = 10) + 
+  theme_bw() + xlab('PM2.5 Concentration (ug/m3)') + 
+  ylab('log(count)')
+pmhist
+ggsave(pmhist, file = image_name('PM25_histogram'))
 
 
 # ACS histograms
@@ -239,8 +252,17 @@ house_hist <- ggplot(births, aes(x = estimate_household_income)) + geom_histogra
 house_hist
 ggsave(house_hist, file = image_name('housing_hist'))
 
-# correlation matrix
-mycorr <- round(cor(births), 1)
+
+births_full = births # we keep this df with all columns for reference
+
+
+# correlation matrix for ACS variables
+births_acs = births %>% select(starts_with('estimate'))
+data.frame(colSums(is.na(births_acs)))
+
+
+mycorr <- round(cor(births_acs, use = 'complete.obs'), 2)
+write.csv(mycorr, file = output_name('acs_correlation'), row.names = FALSE)
 
 
 ## ANALYSIS #######
@@ -252,27 +274,6 @@ s1_test <- births_exposure[-s1_id]
 s1_logit <- glm(preterm ~ pm25mean, family = binomial('logit'), data = s1_train)
 s1_logit_full <- glm(preterm ~ race + female + pm25mean, family = binomial('logit'), data = s1_train)
 
-# separate air exposure into quartiles
-quartcut = cut2(births$pm25mean, g = 4, onlycuts = TRUE)
-quartcut
-
-tricut = cut2(births$pm25mean, g = 3, onlycuts = TRUE)
-tricut
-
-# both quartiles and tertiles seem very tight
-# check that we have events and nonevents in all groups
-
-births <- births %>% mutate(pm25_tertile = case_when(
-  pm25mean < tricut[2] ~ 'tertile1',
-  pm25mean < tricut[3] ~ 'tertile2',
-  TRUE ~ 'tertile3'
-  ))
-births$pm25_tertile <- as.factor(births$pm25_tertile)
-
-births <- births %>% mutate(pm25binary = case_when(
-  pm25mean < 15.5 ~ 0,
-  TRUE ~ 1
-  ))
 
 s2_logit <- glm(preterm ~ pm25_tertile, data = births)
 summary(s2_logit)
@@ -280,26 +281,14 @@ s1_logit <- glm(preterm ~ pm25mean, data = births)
 summary(s1_logit)
 
 
-# calculate the time at event; if not preterm, use 37wks = 259 days
+# if we choose to right-censor: calculate the time at event; if not preterm, use 37wks = 259 days
 births <- births %>% mutate(event_time = case_when(
   gest_weeks > 37 ~ 37,
   TRUE ~ gest_weeks
   ))
 
 
-# histogram of PM2.5 values to identify extremes
-pmhist_breaks = read.csv('/Volumes/Padlock/covid/output/hist_breaks.csv')
-pmhist_counts = read.csv('/Volumes/Padlock/covid/output/hist_counts.csv')
 
-
-pm_freq = data.frame(pmhist_breaks$x[1:nrow(pmhist_breaks) -1], pmhist_counts$x)
-colnames(pm_freq) = c('pm_val', 'counts')
-
-pmhist = ggplot(pm_freq, aes(pm_val, counts)) + geom_col(width = 10) + 
-   theme_bw() + xlab('PM2.5 Concentration (ug/m3)') + 
-  ylab('log(count)')
-pmhist
-ggsave(pmhist, file = image_name('PM25_histogram'))
 
 library(janitor)
 frq_pn <- births %>% tabyl(race, pn_care, insurance)
@@ -350,7 +339,7 @@ ps_plot <- ggplot(ps_df, aes(x = x, y = hr)) +
   theme_bw()
 ps_plot
 ggsave(ps_plot, file= image_name('hazard_psplines_plot_pm25'))
-
+  
 
 
 
