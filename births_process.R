@@ -9,6 +9,7 @@ library(survival)
 library(caTools)
 library(Hmisc)
 library(survminer)
+library(ggcorrplot)
 
 ## CONSTANTS AND GLOBALS ###########
 
@@ -126,6 +127,10 @@ for (myfact in fact_cols) {
 }
 
 births <- births_tmp
+
+# collapse any factors we wish to combine
+births$insurance = fct_collapse(births$insurance, all_other_pay = c("all_other_pay", "self_pay"))
+
 births[is.na(births)] <- 0
 
 births <- births %>% filter(singleton == 1)
@@ -169,10 +174,24 @@ births <- births %>%
 #  filter(pm25 > 0 & start_date >= ymd('2020-01-01') & baby_DOB <= ymd('2020-12-31')) %>%
   mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
 
+
+#births <- births %>% mutate(housing_burden = estimate_household_income/estimate_housing_costs)
+
+births <- births %>% mutate(year_mth_start = str_sub(start_date, 1, 7))
+births <- births %>% mutate(year_mth_fact = as.factor(year_mth_start))
+
+# to use the start year and month of the pregnancy, use a spline
+datelist = sort(unique(births$year_mth_start))
+births <- births %>% mutate(year_mth_ord = match(year_mth_start, datelist))
+
+
 ### write a coordinates file
 exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB)
-write.csv(exposure_calc, file = '/Volumes/Padlock/covid/data/births_exposure_calc.csv', row.names = FALSE)
+write.csv(exposure_calc, file = output_name('exposure_coordinates'), row.names = FALSE)
 
+
+# write a file of the processed columns
+write.csv(colnames(births), "/Volumes/Padlock/covid/data/columns_processed.csv", row.names = FALSE)
 
 ### table 1 ###############
 
@@ -203,6 +222,26 @@ pm25_county_mean <- births %>% group_by(county) %>%
             pm25county_sd = sd(pm25mean),
             county_births_count = n())
 write.csv(pm25_county_mean, file = output_name('county_summary'), row.names = FALSE)
+
+
+
+
+# ACS histograms
+pov_hist <- ggplot(births, aes(x = estimate_poverty)) + geom_histogram() + 
+  xlab("Poverty rate") +
+  theme_bw()
+pov_hist
+ggsave(pov_hist, file = image_name('poverty_hist'))
+
+house_hist <- ggplot(births, aes(x = estimate_household_income)) + geom_histogram() + 
+  xlab("Household income") +
+  theme_bw()
+house_hist
+ggsave(house_hist, file = image_name('housing_hist'))
+
+# correlation matrix
+mycorr <- round(cor(births), 1)
+
 
 ## ANALYSIS #######
 
@@ -257,9 +296,10 @@ pm_freq = data.frame(pmhist_breaks$x[1:nrow(pmhist_breaks) -1], pmhist_counts$x)
 colnames(pm_freq) = c('pm_val', 'counts')
 
 pmhist = ggplot(pm_freq, aes(pm_val, counts)) + geom_col(width = 10) + 
-  scale_y_log10() + theme_bw() + xlab('PM2.5 Concentration (ug/m3)') + 
+   theme_bw() + xlab('PM2.5 Concentration (ug/m3)') + 
   ylab('log(count)')
 pmhist
+ggsave(pmhist, file = image_name('PM25_histogram'))
 
 library(janitor)
 frq_pn <- births %>% tabyl(race, pn_care, insurance)
@@ -267,7 +307,9 @@ frq_pn <- births %>% tabyl(race, pn_care, insurance)
 frq_bmi <- births %>% tabyl(race, bmi, insurance)
 
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
-cox_base <- coxph(Surv(gest_weeks, preterm) ~  ipi + mom_age + bmi + inf_sex + pspline(pm25mean, df = 4) + strata(race, insurance, pn_care), data = births)
+cox_base <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 0) +
+                    ipi + mom_age  + inf_sex + estimate_household_income + estimate_poverty + 
+                    strata(race, insurance, pn_care), data = births)
 summary(cox_base)
 sr <- cox.zph(cox_base)
 
@@ -275,6 +317,7 @@ sr <- cox.zph(cox_base)
 
 # Plot the Schoenfeld Residuals
 srplt = ggcoxzph(sr, df = 3)  # df >4 leads to an NA/NaN/Inf error
+
 
 png(file = image_name('schoenfeld_test'), width = 1000, height = 900)
 srplt
@@ -284,7 +327,7 @@ srplt
 sr
 
 cox_ps = coxph(Surv(gest_weeks, preterm) ~ pspline(pm25mean, df = 4), data = births)
-ps_termplot = termplot(cox_ps, term = 1, se=T, plot = F)
+ps_termplot = termplot(cox_base, term = 1, se=T, plot = F)
 
 ps_df = data.frame(ps_termplot$pm25mean)
 ps_df <- ps_df %>% mutate(hr = exp(y),
@@ -306,7 +349,7 @@ ps_plot <- ggplot(ps_df, aes(x = x, y = hr)) +
   ylab("Hazard ratio for PM2.5 using psplines") +
   theme_bw()
 ps_plot
-ggsave(ps_plot, file= image_name('hazard_psplines_plot'))
+ggsave(ps_plot, file= image_name('hazard_psplines_plot_pm25'))
 
 
 
@@ -315,7 +358,7 @@ ggsave(ps_plot, file= image_name('hazard_psplines_plot'))
 
 # plot errors...are there any categories for whom no PTB events occurred?
 dr2 <- ggcoxdiagnostics(cox_base, type = 'deviance', linear.predictions = FALSE, se = FALSE, ggtheme = theme_bw())
-dr2
+#dr2 this does not work just processes forever
 
 contingency_pm25 <- epitable(births$pm25_tertile, births$preterm)
 pm25_rr = epitab(contingency_pm25, method = 'riskratio')
