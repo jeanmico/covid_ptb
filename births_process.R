@@ -39,6 +39,7 @@ factor_defs_fp = paste(fp_data, 'factor_defs.csv', sep = '')
 factor_comps_fp = paste(fp_data, 'factor_components.csv', sep = '')
 coldict_fp = paste(fp_data, 'columns_dict.csv', sep = '')
 pocany_fp = paste(fp_data, 'cumulative_exposure_POCany_pass2.csv', sep = '')
+badair_days_fp = paste(fp_data, 'exposure_counts_all.csv', sep = '')
 
 ## FUNCTIONS #############
 
@@ -98,6 +99,35 @@ timeline_plot <- function(df) {
 }
 
 
+cox_coxph <- function(df) {
+  coxmodel = coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
+          ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+          strata(race, insurance, pn_care), data = df)
+  return(coxmodel)
+  }
+
+hazard_ratios <- function(cox_model, plotname) {
+  cox_termplot = termplot(cox_model, term = 1, se=T, plot = F)
+  
+  cox_df = data.frame(cox_termplot$pm25mean)
+  cox_df <- cox_df %>% mutate(hr = exp(y),
+                            lci = exp(y - 196*se),
+                            uci = exp(y + 1.96*se))
+  
+  hr_plot <- ggplot(ps_df, aes(x = x, y = hr)) + 
+    geom_line(size = 1.5) + 
+    geom_line(data=ps_df, aes(x = x, y = lci), color = '#009d9a', linetype = 'dashed') + 
+    geom_line(data=ps_df, aes(x = x, y = uci), color = '#009d9a', linetype = 'dashed') +
+    geom_hline(yintercept=1, linetype = 'longdash') +
+    xlab("Mean PM2.5") + 
+    ylab("Hazard ratio for PM2.5 using psplines") +
+    theme_bw()
+  ggsave(hr_plot, file = image_name(paste('hazard_ratio_', plotname, sep = '')), dpi = 300)
+  
+  }
+
+cox_cph <- function(df) {}
+
 ## START #################
 
 ### read data files #####
@@ -105,6 +135,7 @@ births_raw = read.csv(births_fp)  # births data
 census_tracts = read.csv(census_tracts_fp)  # corrected census tracts
 acs = read.csv(acs_fp)  # data from American Community Survey 2015-19
 pocany = read.csv(pocany_fp)  # PM2.5 exposure data
+badair_days = read.csv(badair_days_fp)  # how many days was PM2.5 > 100ug/m3
 
 ### read data dictionaries #####
 factor_defs = read.csv(factor_defs_fp)  # factor definitions (names, missing, default)
@@ -171,18 +202,28 @@ births <- births %>% mutate(covid_start_in = case_when(
   covid_start_date < baby_DOB ~ 'tri_3',
   TRUE ~ 'post_partum'))
 
-### integrate exposure data
+### integrate exposure data #####
 pocany <- pocany %>% mutate(poc_type = "POC_any") %>% filter(V1 > 200 & V1 < 7500) %>% rename(pm25 = V1)
 births <- merge(births, pocany, by = "VS_unique")
 births <- births %>% 
   mutate(pm25mean = pm25/time_length(baby_DOB - start_date, unit = "days"))
 
+# how many bad air days did eavh person experience?
+colnames(badair_days) = c("X", "VS_unique", "badair_count")
+births <- merge(births, badair_days, by = "VS_unique")
+births <- births %>% mutate(badair_binary = case_when(badair_count > 0 ~ 1, TRUE ~ 0))
+
+# Start date of pregnancy
 births <- births %>% mutate(year_mth_start = str_sub(start_date, 1, 7))
 births <- births %>% mutate(year_mth_fact = as.factor(year_mth_start))
 
 # to use the start year and month of the pregnancy, use a spline
 datelist = sort(unique(births$year_mth_start))
 births <- births %>% mutate(year_mth_ord = match(year_mth_start, datelist))
+
+
+### FILTER BY MONTH??
+births <- births %>% filter(year_mth_ord <= 9) # 9 was chosen because it's the latest month with more than 2000 births
 
 ## END OF VARIABLE CREATION AND SAMPLE SELECTION ###
 
@@ -257,13 +298,16 @@ births_full = births # we keep this df with all columns for reference
 
 
 # correlation matrix for ACS variables
-births_acs = births %>% select(starts_with('estimate'))
+births_acs = births %>% dplyr::select(starts_with('estimate'))
 data.frame(colSums(is.na(births_acs)))
 
 
 mycorr <- round(cor(births_acs, use = 'complete.obs'), 2)
 write.csv(mycorr, file = output_name('acs_correlation'), row.names = FALSE)
 
+png(filename = image_name('acs_correlation'), width = 600, height = 900)
+ggcorrplot(mycorr, type = "lower", colors = c('#b2182b', '#f7f7f7', '#2166ac'), lab = TRUE)
+dev.off()
 
 ## ANALYSIS #######
 
@@ -296,13 +340,13 @@ frq_pn <- births %>% tabyl(race, pn_care, insurance)
 frq_bmi <- births %>% tabyl(race, bmi, insurance)
 
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
-cox_base <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 0) +
-                    ipi + mom_age  + inf_sex + estimate_household_income + estimate_poverty + 
+cox_base <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
+                    ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
                     strata(race, insurance, pn_care), data = births)
 summary(cox_base)
 sr <- cox.zph(cox_base)
 
-
+plot(summary(cox_base))
 
 # Plot the Schoenfeld Residuals
 srplt = ggcoxzph(sr, df = 3)  # df >4 leads to an NA/NaN/Inf error
@@ -323,25 +367,66 @@ ps_df <- ps_df %>% mutate(hr = exp(y),
                           lci = exp(y - 196*se),
                           uci = exp(y + 1.96*se))
 
-
-plot(x = newdf$x, y = newdf$hr,type = 'l', col = "red",xlab = "Mean PM2.5",
-     ylab = "Hazard ratio for PM2.5 with the Cox model using psplines")
-lines(x = newdf$x, y = newdf$lci, col = "blue")
-lines(x = newdf$x, y = newdf$uci, col = "blue")
-abline(h = 1, col = "gray")
-
 ps_plot <- ggplot(ps_df, aes(x = x, y = hr)) + 
   geom_line(size = 1.5) + 
   geom_line(data=ps_df, aes(x = x, y = lci), color = '#009d9a', linetype = 'dashed') + 
   geom_line(data=ps_df, aes(x = x, y = uci), color = '#009d9a', linetype = 'dashed') +
+  geom_hline(yintercept=1, linetype = 'longdash') +
   xlab("Mean PM2.5") + 
   ylab("Hazard ratio for PM2.5 using psplines") +
   theme_bw()
 ps_plot
-ggsave(ps_plot, file= image_name('hazard_psplines_plot_pm25'))
+ggsave(ps_plot, file= image_name('hazard_psplines_plot_pm25_fullmodel'))
   
 
+library(rms)
+surv_upd <- Surv(time = births$gest_weeks, event = births$preterm)
+cox_upd = cph(surv_upd ~ ipi  + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+                strat(insurance) + strat(race) + strat(pn_care), 
+              , data = births 
+              , x = TRUE, y = TRUE, surv  = TRUE)
 
+ddist <- datadist(births)
+options(datadist = "ddist")
+summary(cox_upd)
+plot(summary(cox_upd))
+
+cox.zph(cox_upd)
+
+plot(cox.zph(cox_upd, "identity"))
+
+
+cox_full = cph(surv_upd ~ ipi  + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+                strat(insurance) + strat(race) + strat(pn_care) + rcs(pm25mean, 4) + rcs(year_mth_ord, 4), 
+              , data = births 
+              , x = TRUE, y = TRUE, surv  = TRUE)
+summary(cox_full)
+plot(summary(cox_full))
+cox.zph(cox_full)
+
+residuals(cox_full)
+
+ggplot(Predict(cox_full, pm25mean))
+ggplot(Predict(cox_full, year_mth_ord))
+
+AIC(cox_full) # the minimum AIC is with both pm25mean and year_mth_ord as splines
+
+
+
+## separate by covid status ############
+births_nocov <- births %>% filter(any_mat_covid == 0)
+births_cov <- births %>% filter(any_mat_covid == 1)
+
+cox_cov = cox_coxph(births_cov)
+cox_nocov = cox_coxph(births_nocov)
+
+hazard_ratios(cox_cov, 'covid')
+hazard_ratios(cox_nocov, 'nocovid')
+
+cov_sr <- cox.zph(cox_cov)
+nocov_sr <- cox.zph(cox_nocov)
+
+ggplot(Predict(cox_nocov, pm25mean))
 
 
 
