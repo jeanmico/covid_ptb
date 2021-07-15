@@ -18,8 +18,14 @@ library(caTools)
 library(Hmisc)
 library(survminer)
 library(ggcorrplot)
+library(cowplot)
+library(janitor)
+library(broom)
+library(ggplot2)
+library(ggstance)
 
 ## CONSTANTS AND GLOBALS ###########
+set.seed(123)
 
 # LA county closed on Mar 16 2020
 covid_start_date <<- ymd('2020-04-16')
@@ -114,16 +120,42 @@ hazard_ratios <- function(cox_model, plotname) {
                             lci = exp(y - 196*se),
                             uci = exp(y + 1.96*se))
   
-  hr_plot <- ggplot(ps_df, aes(x = x, y = hr)) + 
+  hr_plot <- ggplot(cox_df, aes(x = x, y = hr)) + 
     geom_line(size = 1.5) + 
-    geom_line(data=ps_df, aes(x = x, y = lci), color = '#009d9a', linetype = 'dashed') + 
-    geom_line(data=ps_df, aes(x = x, y = uci), color = '#009d9a', linetype = 'dashed') +
+    geom_line(data=cox_df, aes(x = x, y = lci), color = '#009d9a', linetype = 'dashed') + 
+    geom_line(data=cox_df, aes(x = x, y = uci), color = '#009d9a', linetype = 'dashed') +
     geom_hline(yintercept=1, linetype = 'longdash') +
     xlab("Mean PM2.5") + 
     ylab("Hazard ratio for PM2.5 using psplines") +
     theme_bw()
-  ggsave(hr_plot, file = image_name(paste('hazard_ratio_', plotname, sep = '')), dpi = 300)
   
+  hr_plot_log <- ggplot(cox_df, aes(x = x, y = hr)) + 
+    geom_line(size = 1.5) + 
+    geom_line(data=cox_df, aes(x = x, y = lci), color = '#009d9a', linetype = 'dashed') + 
+    geom_line(data=cox_df, aes(x = x, y = uci), color = '#009d9a', linetype = 'dashed') +
+    geom_hline(yintercept=1, linetype = 'longdash') +
+    xlab("Mean PM2.5") + 
+    ylab("Log Hazard ratio for PM2.5 using psplines") +
+    scale_y_log()
+    theme_bw()
+  
+  hr_grid <- plot_grid(hr_plot, hr_plot_log)
+    
+  ggsave(hr_grid, file = image_name(paste('hazard_ratio_', plotname, sep = '')), dpi = 300)
+  
+  return(cox_df)
+  }
+
+hazard_forest <- function(hr_df, plotname){
+  
+  hr_fp <- ggplot(hr_df, aes(y = varname, x= var_exp, xmin = lower, xmax = upper)) + 
+    geom_linerangeh(size = .5) + 
+    geom_point(size = 1) +
+    scale_x_log10() +
+    xlab('exp(coeff)') + 
+    ggtitle(plotname) + 
+    theme_bw()
+  return(hr_fp)
   }
 
 cox_cph <- function(df) {}
@@ -221,6 +253,12 @@ births <- births %>% mutate(year_mth_fact = as.factor(year_mth_start))
 datelist = sort(unique(births$year_mth_start))
 births <- births %>% mutate(year_mth_ord = match(year_mth_start, datelist))
 
+# if we choose to right-censor: calculate the time at event; if not preterm, use 37wks = 259 days
+births <- births %>% mutate(event_time = case_when(
+  gest_weeks > 37 ~ 37,
+  TRUE ~ gest_weeks
+))
+
 
 ### FILTER BY MONTH??
 births <- births %>% filter(year_mth_ord <= 9) # 9 was chosen because it's the latest month with more than 2000 births
@@ -309,41 +347,54 @@ png(filename = image_name('acs_correlation'), width = 600, height = 900)
 ggcorrplot(mycorr, type = "lower", colors = c('#b2182b', '#f7f7f7', '#2166ac'), lab = TRUE)
 dev.off()
 
-## ANALYSIS #######
-
-s1_train = sample_frac(births_exposure, .75)
-s1_id <- as.numeric(rownames(s1_train))
-s1_test <- births_exposure[-s1_id]
-
-s1_logit <- glm(preterm ~ pm25mean, family = binomial('logit'), data = s1_train)
-s1_logit_full <- glm(preterm ~ race + female + pm25mean, family = binomial('logit'), data = s1_train)
 
 
-s2_logit <- glm(preterm ~ pm25_tertile, data = births)
-summary(s2_logit)
-s1_logit <- glm(preterm ~ pm25mean, data = births)
-summary(s1_logit)
+# frequency tables to check sample sizes
 
-
-# if we choose to right-censor: calculate the time at event; if not preterm, use 37wks = 259 days
-births <- births %>% mutate(event_time = case_when(
-  gest_weeks > 37 ~ 37,
-  TRUE ~ gest_weeks
-  ))
-
-
-
-
-library(janitor)
 frq_pn <- births %>% tabyl(race, pn_care, insurance)
 
 frq_bmi <- births %>% tabyl(race, bmi, insurance)
 
+## ANALYSIS #######
+
+births_train = sample_frac(births, .75)
+births_id <- as.numeric(rownames(births_train))
+births_test <- births_exposure[-births_id]
+
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
-cox_base <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
-                    ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
-                    strata(race, insurance, pn_care), data = births)
-summary(cox_base)
+
+# check the AIC for multiple models
+cox1 <- coxph(Surv(gest_weeks, preterm) ~  pm25mean + year_mth_ord +
+                ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+                strata(race, insurance, pn_care), data = births_train)
+
+cox2 <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + year_mth_ord +
+                ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+                strata(race, insurance, pn_care), data = births_train)
+
+cox3 <- coxph(Surv(gest_weeks, preterm) ~  pm25mean + pspline(year_mth_ord, df = 4) +
+                ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+                strata(race, insurance, pn_care), data = births_train)
+
+cox4 <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
+                ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
+                strata(race, insurance, pn_care), data = births_train)
+
+min_aic_cox <- which.min(c(AIC(cox1), AIC(cox2), AIC(cox3), AIC(cox4)))
+
+cox_base <- cox4
+
+base_summ <- summary(cox_base)
+base_coeff <- round(data.frame(base_summ$coefficients), 2)
+base_ci <- round(data.frame(base_summ$conf.int), 2)
+base_ci <- base_ci %>% rownames_to_column()
+colnames(base_ci) <- c('varname', 'var_exp', 'var_nexp', 'lower', 'upper')
+
+write.csv(base_coeff, file = output_name('base_model_coeff'), row.names = TRUE)
+write.csv(base_ci, file = output_name('base_model_ci'), row.names  = TRUE)
+
+hazard_ratios(cox_base, 'all')
+
 sr <- cox.zph(cox_base)
 
 plot(summary(cox_base))
