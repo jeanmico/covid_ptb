@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=05:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=%x_%j.out
 
 /software/c4/wittelab/containers/geospatial-3.6.2/rocker_r-geospatial.img Rscript air_surface.R
