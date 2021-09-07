@@ -26,11 +26,13 @@ rastname_base = '~/covid/output/rasts_POC_any_2019/'
 
 ## Air surface
 county_ref = read.csv('~/covid/data/california_county_dict.csv')
-epa_raw = read.csv('~/covid/data/EPA_2019_pm25_CA.csv')
-
+epa_raw19 = read.csv('~/covid/data/EPA_2019_pm25_CA.csv')
+epa_raw20 = read.csv('~/covid/data/EPA_2020_pm25_CA.csv')
+epa_raw21 = read.csv('~/covid/data/EPA_2021_pm25_CA.csv')
 # filter by POC (comment out to use all sensors)
 #epa_raw <- epa_raw %>% filter(POC == 1)
-
+epa_raw = rbind(epa_raw19, epa_raw20)
+epa_raw = rbind(epa_raw, epa_raw21)
 # How many counties do not have an EPA sensor?
 epa_counties <- unique(epa_raw$COUNTY_CODE)
 #print(nrow(county_ref) - length(epa_counties))
