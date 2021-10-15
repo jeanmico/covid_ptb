@@ -35,6 +35,7 @@ covid_start_date <<- ymd('2020-03-16')
 # filepaths
 fp_base <<- '/Volumes/Padlock/covid/'
 fp_data <<- paste(fp_base, 'data/', sep = '')
+fp_exp <<- paste(fp_base, 'exposure/', sep = '')
 fp_out <<- paste(fp_base, 'output/', sep = '')
 fp_img <<- paste(fp_base, 'images/', sep = '')
 
@@ -46,6 +47,11 @@ acs_fp = paste(fp_data, 'acs_data_5yr_2019.csv', sep = '')
 factor_defs_fp = paste(fp_data, 'factor_defs.csv', sep = '')
 factor_comps_fp = paste(fp_data, 'factor_components.csv', sep = '')
 coldict_fp = paste(fp_data, 'columns_dict.csv', sep = '')
+
+county_pop_fp = paste(fp_data, 'county_pop_census_2019.csv', sep = '')
+county_area_fp = paste(fp_data, 'county_area.csv', sep = '')
+county_dict_fp = paste(fp_data, 'california_county_dict.csv', sep = '')
+
 pocany_fp = paste(fp_data, 'cumulative_exposure_POCany_pass2.csv', sep = '')
 badair_days_fp = paste(fp_data, 'exposure_counts_all.csv', sep = '')
 pm25_na_fp = paste(fp_data, 'exposure_na_all.csv', sep = '')
@@ -85,7 +91,6 @@ factorize_data <- function(factors, df){
   return(df)
 }
 
-
 timeline_plot <- function(df) {
   births_dateplt <- df %>% arrange(desc(start_date)) %>% mutate(date_order = row_number())
   
@@ -106,6 +111,51 @@ timeline_plot <- function(df) {
   ggsave(timeplt, file = image_name('timeline_plot'))
 }
 
+exposure_add <- function(df) {
+  explist = c('exposure', 'tri1exposure', 'tri2exposure', 'tri3exposure')
+  
+  for (i in explist) {
+    suffix = gsub('exposure', '', i)
+    print(i)
+    print(suffix)
+    na = paste('na_days', suffix, sep = '')
+    print(na)
+    bad = paste('badair_count', suffix, sep = '')
+    badbin = paste('badair_binary', suffix, sep = '')
+    pm = paste('pm25', suffix, sep = '')
+    pmmean = paste('pm25mean', suffix, sep = '')
+    
+    pocany = read.csv(paste(fp_exp, i, '_sum_all.csv', sep = ''))
+    print('read')
+    badair_days = read.csv(paste(fp_exp, i, '_counts_all.csv', sep = ''))
+    pm25_na = read.csv(paste(fp_exp, i, '_na_all.csv', sep = ''))
+
+    ### integrate exposure data #####
+    colnames(pm25_na) = c('X', 'VS_unique', na)
+    df <- merge(df, pm25_na, by = 'VS_unique')
+    df <- df %>% dplyr::select(-X)
+    
+    #pocany <- pocany %>% mutate(poc_type = "POC_any")
+    colnames(pocany) = c('X', 'VS_unique', pm)
+    df <- merge(df, pocany, by = "VS_unique")
+    df <- df %>% dplyr::select(-X)
+    #df <- df %>% 
+    #  mutate(!!pmmean := !!pm/(time_length(baby_DOB - start_date, unit = "days") - !!na))
+    df[[pmmean]] = df[[pm]]/(time_length(df[["baby_DOB"]] - df[["start_date"]], unit = "days") - df[[na]])
+    
+    # how many bad air days did eavh person experience?
+    colnames(badair_days) = c('X', 'VS_unique', bad)
+    df <- merge(df, badair_days, by = "VS_unique")
+    df <- df %>% dplyr::select(-X)
+    df <- df %>% mutate(badbin = case_when(!!bad > 0 ~ 1, TRUE ~ 0))
+    
+    }
+  return(df)
+  }
+
+rsq <- function(x, y) {
+  return(cor(x,y)^2)
+}
 
 cox_coxph <- function(df) {
   coxmodel = coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
@@ -119,7 +169,7 @@ hazard_ratios <- function(cox_model, plotname, myvar) {
   
   cox_df = data.frame(cox_termplot[[myvar]])
   cox_df <- cox_df %>% mutate(hr = exp(y),
-                            lci = exp(y - 196*se),
+                            lci = exp(y - 1.96*se),
                             uci = exp(y + 1.96*se))
   
   hr_plot <- ggplot(cox_df, aes(x = x, y = hr)) + 
@@ -143,12 +193,12 @@ hazard_ratios <- function(cox_model, plotname, myvar) {
   
   hr_grid <- plot_grid(hr_plot, hr_plot_log)
     
-  ggsave(hr_plot, file = image_name(paste('hazard_ratio_', plotname, '_', myvar, sep = '')), dpi = 300)
+  #ggsave(hr_plot, file = image_name(paste('hazard_ratio_', plotname, '_', myvar, sep = '')), dpi = 300)
   
   return(cox_df)
   }
 
-hazard_forest <- function(hr_df, plotname, filename){
+hazard_forest <- function(hr_df, plotname, fname){
   
   renames = read.csv(paste(fp_data, 'hazard_renames.csv', sep = ''))
   
@@ -160,12 +210,38 @@ hazard_forest <- function(hr_df, plotname, filename){
     xlab('exp(coeff) (log scale)') + 
     ggtitle(plotname) + 
     theme_bw()
-  ggsave(hr_fp, file = image_name(filename), dpi = 300)
+  ggsave(hr_fp, file = image_name(fname), dpi = 300)
   
   return(hr_fp)
   }
 
-cox_cph <- function(df) {}
+# termplot function to check the PM2.5 distribution
+termp <- function(df, fnamestr) {
+  
+  
+  return(termplot(df, term = 1, se = T, plot = T))
+  
+}
+
+# Cox model function
+#  takes arguments as strings, builds literal function call
+cox_cph <- function(df, varlist, stratalist, splinelist) {
+  myvars = paste(varlist, collapse = ' + ')
+  stratas = paste(stratalist, collapse = ', ')
+  mystrata = paste(' + strata(', stratas, ')')
+  mysplines = paste(splinelist, collapse = ' + ')
+  
+  mysplines = paste(mysplines, '+ ')
+  
+  mycall = as.formula(paste('Surv(gest_weeks, preterm) ~', mysplines, myvars, mystrata))
+  
+  mdl = coxph(mycall, data  = df)
+  
+  termp(mdl, fname)
+  
+  hazard_ratios(mdl, 'hr_test', 'pm25mean')
+  
+  }
 
 ## START #################
 
@@ -173,6 +249,11 @@ cox_cph <- function(df) {}
 births_raw = read.csv(births_fp)  # births data
 census_tracts = read.csv(census_tracts_fp)  # corrected census tracts
 acs = read.csv(acs_fp)  # data from American Community Survey 2015-19
+county_pop = read.csv(county_pop_fp)
+county_area = read.csv(county_area_fp)
+county_dict = read.csv(county_dict_fp)
+
+# read exposure files #
 pocany = read.csv(pocany_fp)  # PM2.5 exposure data
 badair_days = read.csv(badair_days_fp)  # how many days was PM2.5 > 100ug/m3
 pm25_na = read.csv(pm25_na_fp)
@@ -229,11 +310,26 @@ births <- births %>% mutate(county = str_sub(with_options(c(scipen=999),
 births <- merge(births, acs, by = 'census_tract')
 
 
+### calculate population density ###
+county_area <- county_area[county_area$STATEFP == 6,]
+county_density = merge(county_area, county_pop, by.x = 'NAMELSAD', by.y = 'County')
+county_density = county_density %>% mutate(pop_density = Population/ALAND) %>% dplyr::select(COUNTYFP, pop_density)
+births <- births %>% mutate(county_fips = as.numeric(substr(county, 3, 5)))
+
+births <- merge(births, county_density, by.x = 'county_fips', by.y='COUNTYFP')
+
 ### determine pregnancy start date ##########
 births <- births %>% mutate(baby_DOB = mdy(baby_DOB)) %>%
   mutate(start_date = ymd(baby_DOB) - weeks(gest_weeks))
 
-births <- births %>% mutate(tri2_start = start_date + make_difftime(weeks = 12), tri3_start = tri2_start + make_difftime(weeks = 12))
+births <- births %>% mutate(
+  tri1_start = start_date,
+  tri2_start = start_date + make_difftime(weeks = 12), 
+  tri3_start = tri2_start + make_difftime(weeks = 12),
+  tri1_end = tri2_start - make_difftime(days = 1),
+  tri2_end = tri3_start - make_difftime(days = 1),
+  tri3_end = baby_DOB
+  )
 
 births <- births %>% mutate(covid_start_in = case_when(
   covid_start_date < start_date ~ 'tri_0',
@@ -243,19 +339,9 @@ births <- births %>% mutate(covid_start_in = case_when(
   TRUE ~ 'post_partum'))
 
 ### integrate exposure data #####
-colnames(pm25_na) = c('X', 'VS_unique', 'na_days')
-births <- merge(births, pm25_na, by = 'VS_unique')
-
-pocany <- pocany %>% mutate(poc_type = "POC_any") %>% rename(pm25 = V1)
-births <- merge(births, pocany, by = "VS_unique")
-births <- births %>% 
-  mutate(pm25mean = pm25/(time_length(baby_DOB - start_date, unit = "days") - na_days))
-
-# how many bad air days did eavh person experience?
-colnames(badair_days) = c("X", "VS_unique", "badair_count")
-births <- merge(births, badair_days, by = "VS_unique")
-births <- births %>% mutate(badair_binary = case_when(badair_count > 0 ~ 1, TRUE ~ 0))
-
+births_tmp = births
+births_tmp = exposure_add(births_tmp)
+births = births_tmp
 
 
 # Start date of pregnancy
@@ -266,22 +352,41 @@ births <- births %>% mutate(year_mth_fact = as.factor(year_mth_start))
 datelist = sort(unique(births$year_mth_start))
 births <- births %>% mutate(year_mth_ord = match(year_mth_start, datelist))
 
+# did the pregnancy start after covid?
+births <- births %>% mutate(after_covid = case_when(start_date > covid_start_date ~ TRUE,
+                                                    TRUE ~ FALSE))
+
 # if we choose to right-censor: calculate the time at event; if not preterm, use 37wks = 259 days
-births <- births %>% mutate(event_time = case_when(
-  gest_weeks > 37 ~ 37,
-  TRUE ~ gest_weeks
-))
+#births <- births %>% mutate(event_time = case_when(
+ # gest_weeks > 37 ~ 37,
+  #TRUE ~ gest_weeks
+#))
 
 
-### FILTER BY MONTH??
-births <- births %>% filter(year_mth_ord <= 9) # 9 was chosen because it's the latest month with more than 2000 births
+### FILTER BY MONTH ####
+births <- births %>% filter(year_mth_ord <= 8) # 9 was chosen because it's the latest month with more than 2000 births
+
+# add season variable
+births <- births %>% mutate(season = ceil(year_mth_ord/3)) %>% mutate(season = as.factor(season))
+
+
+### add in NICU distance ####
+nicu = read.csv(paste(fp_data, "nicu_centroid_distances.csv", sep = ''))
+nicu <- nicu %>% mutate(countystr = paste("0", STATEFP, str_pad(COUNTYFP, 3, 'left', '0'), sep = '')) %>% select(countystr, HubDist) %>% 
+  dplyr::group_by(countystr) %>% dplyr::summarize(min(HubDist))
+colnames(nicu) = c('countystr', 'HubDist')
+births <- merge(births, nicu, by.x = 'county', by.y = 'countystr')
 
 ## END OF VARIABLE CREATION AND SAMPLE SELECTION ###
 
-### write a coordinates file
-exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB)
-write.csv(exposure_calc, file = output_name('exposure_coordinates'), row.names = FALSE)
 
+### write a coordinates file
+exposure_calc <- births %>% dplyr::select(VS_unique, longitude, latitude, start_date, baby_DOB,
+                                          tri1_start, tri1_end,
+                                          tri2_start, tri2_end,
+                                          tri3_start, tri3_end)
+write.csv(exposure_calc, file = output_name('exposure_coordinates'), row.names = FALSE)
+write.csv(exposure_calc, file = '~/covid/data/latlon.csv', row.names = FALSE)
 
 # write a file of the processed columns
 write.csv(colnames(births), "/Volumes/Padlock/covid/data/columns_processed.csv", row.names = FALSE)
@@ -296,6 +401,13 @@ tbl1print = print(mytab)
 write.csv(tbl1print, file = output_name('tbl1print'))
 
 ## PLOTS PT1 #############
+
+# rural vs air quality
+nicu_dist_plt = ggplot(data = births, aes(x = hubdist_scale, y = pm25mean)) + 
+  geom_point() + 
+  theme_bw()
+
+nicu_dist_plt
 
 timeline_plot(births)
 
@@ -373,13 +485,19 @@ dev.off()
 
 frq_pn <- births %>% tabyl(race, pn_care, insurance)
 
-frq_bmi <- births %>% tabyl(race, bmi, insurance)
+frq_bmi <- births %>% tabyl(race, bmi, insurance, mom_age)
+
+births512 = births %>% filter(pm25mean < 12 & pm25mean > 5)
+frq_pn <- births512 %>% tabyl(race, pn_care, mom_age)
+
 
 ## ANALYSIS #######
 
 # center and scale continuous variables
 births <- births %>% mutate(poverty_scale = scale(estimate_poverty),
-                            pm25_scale = pm25mean/5 - mean(pm25mean))
+                            pm25_scale = pm25mean/5 - mean(pm25mean),
+                            pop_density_scale = scale(pop_density),
+                            hubdist_scale = scale(HubDist))
 
 # split test and train
 births_train = sample_frac(births, .75)
@@ -387,37 +505,72 @@ births_id <- as.numeric(rownames(births_train))
 births_test <- births[-births_id]
 
 
-# basic log-linear model
-baselog = glm(preterm ~ pm25_scale, data = births, family = poisson)
-exp(coef(baselog))
-
-countlog = glm(preterm ~ badair_count, data = births, family = poisson)
-exp(coef(countlog))
-
-partial_log = glm(preterm ~ pm25_scale + ipi + year_mth_ord + mom_age + inf_sex + estimate_poverty + race + insurance + pn_care, data = births, family = poisson)
-exp(coef(partial_log))
-summary(partial_log)
-
-partialcount_log = glm(preterm ~ badair_count + ipi + year_mth_ord + mom_age + inf_sex + estimate_poverty + race + insurance + pn_care, data = births, family = poisson)
-exp(coef(partialcount_log))
-summary(partialcount_log)
-
-nointeraction_log = glm(preterm ~ pm25_scale + any_mat_covid, data = births, family=poisson)
-exp(coef(nointeraction_log))
-summary(nointeraction_log)
-
-baseinteraction_log = glm(preterm ~ pm25_scale + any_mat_covid + pm25_scale*any_mat_covid, data = births, family=poisson)
-exp(coef(baseinteraction_log))
-summary(baseinteraction_log)
-
-baseinter_quad_log = glm(preterm ~ pm25_scale + pm25_scale^2 + any_mat_covid + pm25_scale^2*any_mat_covid, data = births, family=poisson)
-exp(coef(baseinter_quad_log))
-summary(baseinter_quad_log)
-
 # Basic Cox Proportional Hazards model, not adjusting for COVID status
 
 ### MODEL SELECTION #####
+
+
+basevars = c('ipi', 'mom_age', 'inf_sex', 'edu', 'badair_binary', 'estimate_poverty')
+basestrata = c('race', 'insurance', 'pn_care')
+pmspline = c('ns(pm25mean, df = 3)')
+seasonspline = c('pspline(year_mth_ord, df = 4)')
+add_bad_air = c(TRUE, FALSE)
+add_bad_air_count = c(TRUE, FALSE)
+
+# most basic model
+
+births1 = births %>% filter(season == 1)
+births2 = births %>% filter(season == 2)
+births3 = births %>% filter(season == 3)
+
+cox_cph(births, c(basevars, 'season'), c(basestrata), c(pmspline, 'ns(estimate_poverty, df = 3)'))
+
+births_18 = births %>% filter(mom_age %in% c("mom_age_18_34", "mom_age_gt34"))
+cox_cph(births_18, basevars, c(basestrata, "season"), c(pmspline))
+
+cox_cph(births_train, c(basevars, 'isrural'), basestrata, c(pmspline, seasonspline))
+
+png(filename= image_name('termplot_full_noseason'))
+cox_cph(births_train, basevars, basestrata, c(pmspline, seasonspline))
+dev.off()
+
+
+cox_cph(births_train, c(basevars, "hubdist_scale", 'season'), basestrata, c(pmspline))
+
+cox_cph(births_train, c(basevars, "estimate_unemployment_rate"), basestrata, c(pmspline, seasonspline))
+
+cox_cph(births_train, c(basevars, "HubDist"), basestrata, c(pmspline))
+
+cox_cph(births_train, c(basevars, "HubDist", 'season'), basestrata, c(pmspline))
+
+cox_cph(births_train, c(basevars, 'HubDist'), c(basestrata, 'season'), c(pmspline))
+
 # build models
+cox0 <- coxph(Surv(gest_weeks, preterm) ~  ns(pm25mean, df = 3), data = births_train)
+summary(cox0)
+
+tfn(cox0)
+
+cox0a <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + pspline(year_mth_ord, df = 4) + 
+                 ipi + mom_age  + inf_sex  + estimate_poverty + edu  +  
+                 strata(race, insurance, pn_care), data = births_tmp)
+tfn <- function(df) {
+  termplot(df, term = 1, se = T, plot = T)
+  
+}
+
+tfn(cox0a)
+
+cox0b <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3)  + 
+                 ipi + mom_age + estimate_poverty + edu + inf_sex + badair_count + season + 
+                 strata(race, insurance, pn_care, after_covid), data = births_train)
+tfn(cox0b)
+
+coxseason <- coxph(Surv(gest_weeks, preterm) ~ pspline(year_mth_ord, df = 3), data = births_train )
+
+tfn(coxseason)
+summary(coxseason)
+
 cox1 <- coxph(Surv(gest_weeks, preterm) ~  pm25mean + year_mth_ord +
                 ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
                 strata(race, insurance, pn_care), data = births_train)
@@ -429,6 +582,7 @@ cox2 <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + year_mth_
 cox3 <- coxph(Surv(gest_weeks, preterm) ~  pm25mean + pspline(year_mth_ord, df = 4) +
                 ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
                 strata(race, insurance, pn_care), data = births_train)
+summary(cox3)
 
 cox4 <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
                 ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
@@ -483,7 +637,7 @@ coxinter1 <- coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4)*any_ma
 
 model_list = list(cox1, cox2, cox3, cox4, cox5, cox6, cox7, cox8, cox9, cox10, cox11, cox12, cox13)
 
-spline_termplot <- termplot(cox12, term = 1, se=T, plot = T)
+spline_termplot <- termplot(cox9, term = 1, se=T, plot = T)
 
 
 # compare models
@@ -496,51 +650,125 @@ exp((aic_cox[[4]] - aic_cox[[3]])/2)
 
 # comparing linear + quadratic to spline
 exp((aic_cox[[4]] - aic_cox[[5]])/2)
-
+births_tmp = births %>% filter(edu_lt12 == TRUE)
 log_like = lapply(model_list, logLik)
-
-# looking at the models in further detail
-cox_base <- cox9
-
-base_summ <- summary(cox_base)
-base_coeff <- round(data.frame(base_summ$coefficients), 2)
-base_ci <- round(data.frame(base_summ$conf.int), 2)
-base_ci <- base_ci %>% rownames_to_column()
-colnames(base_ci) <- c('varname', 'var_exp', 'var_nexp', 'lower', 'upper')
-
-write.csv(base_coeff, file = output_name('base_model_coeff'), row.names = TRUE)
-write.csv(base_ci, file = output_name('base_model_ci'), row.names  = TRUE)
-
-hazard_ratios(cox_base, 'all', 'pm25mean')
-hazard_ratios(cox_base, 'all', 'year_mth_ord')
-
-png(filename = image_name('partial_pm25'))
-partials_plots = termplot(cox_base, terms = 1, se=T, plot = T)
+png(filename = image_name('cox_model_general_termplot'))
+cox12_a <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + pspline(year_mth_ord, df = 4) + 
+                 ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + pop_density_scale +
+                 strata(race, insurance, pn_care, after_covid), data = births_tmp)
+spline_termplot <- termplot(cox12_a, term = 1, se=T, plot = T)
 dev.off()
 
-png(filename = image_name('partial_start'))
-partials_plots = termplot(cox_base, terms = 2, se=T, plot = T)
-dev.off()
+cox12_b <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + pspline(year_mth_ord, df = 4) + 
+                   ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + 
+                   pop_density_scale + pop_density_scale^2 + 
+                   strata(race, insurance, pn_care, after_covid), data = births_train)
+spline_termplot <- termplot(cox12_b, term = 1, se=T, plot = T)
 
-hr1 = smoothHR(data = births_train, coxfit = cox_base)
-plot(hr1, predictor = 'pm25mean')
+cox12_c <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + 
+                   pspline(year_mth_ord, df = 4) + pspline(pop_density_scale, df = 4) + 
+                   ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + 
+                   strata(race, insurance, pn_care, after_covid), data = births_train)
+spline_termplot <- termplot(cox12_c, term = 1, se=T, plot = T)
 
-partials = termplot
+cox12_d <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + 
+                   pspline(year_mth_ord, df = 4) + pspline(pop_density_scale, df = 3) + 
+                   ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + 
+                   strata(race, insurance, pn_care, after_covid), data = births_train)
+spline_termplot <- termplot(cox12_d, term = 1, se=T, plot = T)
 
-sr <- cox.zph(cox_base)
-write.csv(round(sr$table, 3), file = output_name('full_model_sr'))
+cox12_e <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + 
+                   pspline(year_mth_ord, df = 4) + ntile(pop_density_scale, 10) + 
+                   ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + 
+                   strata(race, insurance, pn_care, after_covid), data = births_train)
+spline_termplot <- termplot(cox12_e, term = 1, se=T, plot = T)
+
+cox12_f <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + 
+                   pspline(year_mth_ord, df = 4) + ns(pop_density_scale, 3) + 
+                   ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + 
+                   strata(race, insurance, pn_care, after_covid), data = births_train)
+spline_termplot <- termplot(cox12_f, term = 1, se=T, plot = T)
+
+cox12_g <- coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3) + 
+                   pspline(year_mth_ord, df = 4) + ns(pop_density_scale, 4) + 
+                   ipi + mom_age  + inf_sex  + estimate_poverty +  badair_binary + 
+                   strata(race, insurance, pn_care, after_covid), data = births_train)
+spline_termplot <- termplot(cox12_g, term = 1, se=T, plot = T)
 
 
+# split data by covid status
+
+cox_model <- function(df) {
+  return(coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3)  + 
+                     ipi + mom_age  + inf_sex  + estimate_poverty + pop_density_scale + edu + season + 
+                     strata(race, insurance, pn_care), data = df))
+  }
+
+cox_model_nofire <- function(df) {
+  return(coxph(Surv(gest_weeks, preterm) ~ ns(pm25mean, df = 3)  + 
+                 ipi + mom_age  + inf_sex  + estimate_poverty  + pop_density_scale + edu + 
+                 strata(race, insurance, pn_care), data = df))
+}
+
+fulldata_removed = cox_model(births)
+termplot(fulldata_removed, term = 1, se = T, plot = T)
+
+a = cox_model(births_fire)
+termplot(a, term = 1, se = T, plot = T)
+
+births_nofire = births %>% filter(baby_DOB<as.Date('2020-09-01'))
+nofire_cox = cox_model_nofire(births_nofire)
+
+termplot(nofire_cox, term = 1, se=T, plot = T)
 
 births_train_neg = births_train %>% filter(any_mat_covid == 0)
-cox_neg = coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
-                  ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
-                  strata(race, insurance, pn_care), data = births_train)
+cox_neg = cox_model(births_train_neg)
+
+png(filename = image_name('neg_termplot'))
+neg_termplot <- termplot(cox_neg, term = 1, se=T, plot = T)
+dev.off()
 
 births_train_pos <- births_train %>% filter(any_mat_covid == 1)
-cox_pos = coxph(Surv(gest_weeks, preterm) ~  pspline(pm25mean, df = 4) + pspline(year_mth_ord, df = 4) +
-                  ipi + mom_age  + inf_sex  + estimate_poverty +  badair_count +
-                  strata(race, insurance, pn_care), data = births_train_pos)
+
+cox_pos = cox_model(births_train_pos)
+png(filename = image_name('pos_termplot'))
+pos_termplot <- termplot(cox_pos, term = 1, se=T, plot = T)
+dev.off()
+
+## subgroup analysis - before covid, separate from after
+before_neg = births %>% filter(after_covid == FALSE, any_mat_covid == FALSE)
+before_pos = births %>% filter(after_covid == FALSE, any_mat_covid == TRUE)
+
+after_neg = births %>% filter(after_covid == TRUE, any_mat_covid == FALSE)
+after_pos = births %>% filter(after_covid == TRUE, any_mat_covid == TRUE)
+
+before_neg_cox = cox_model(before_neg)
+before_pos_cox = cox_model(before_pos)
+
+png(filename = image_name('pos_before_termplot'))
+before_pos_termplot <- termplot(before_pos_cox, term = 1, se=T, plot = T)
+dev.off()
+
+png(filename = image_name('neg_before_termplot'))
+before_neg_termplot <- termplot(before_neg_cox, term = 1, se=T, plot = T)
+dev.off()
+
+# after covid needs fewer strata probably, currently errors
+after_neg_cox = cox_model(after_neg)
+after_pos_cox = cox_model(after_pos)
+
+
+pos_summ <- summary(cox_pos)
+pos_coeff <- round(data.frame(pos_summ$coefficients), 2)
+pos_ci <- round(data.frame(pos_summ$conf.int), 2)
+pos_ci <- pos_ci %>% rownames_to_column()
+colnames(pos_ci) <- c('varname', 'var_exp', 'var_nexp', 'lower', 'upper')
+
+write.csv(pos_coeff, file = output_name('pos_model_coeff'), row.names = TRUE)
+write.csv(pos_ci, file = output_name('pos_model_ci'), row.names  = TRUE)
+
+hazard_ratios(cox_pos, 'pos', 'pm25mean')
+hazard_forest(pos_ci, 'positive', 'positive')
 
 neg_summ <- summary(cox_neg)
 neg_coeff <- round(data.frame(neg_summ$coefficients), 2)
@@ -686,3 +914,45 @@ covid_rr <- epitab(contingency_covid, method = 'riskratio')
 
 contingency_pm25bin <- epitable(births$pm25binary, births$preterm)
 pm25_rr = epitab(contingency_pm25bin, method = 'riskratio')
+
+
+
+### ARCHIVE #####
+
+
+
+
+
+
+
+# looking at the models in further detail
+cox_base <- cox9
+
+base_summ <- summary(cox_base)
+base_coeff <- round(data.frame(base_summ$coefficients), 2)
+base_ci <- round(data.frame(base_summ$conf.int), 2)
+base_ci <- base_ci %>% rownames_to_column()
+colnames(base_ci) <- c('varname', 'var_exp', 'var_nexp', 'lower', 'upper')
+
+write.csv(base_coeff, file = output_name('base_model_coeff'), row.names = TRUE)
+write.csv(base_ci, file = output_name('base_model_ci'), row.names  = TRUE)
+
+hazard_ratios(cox_base, 'all', 'pm25mean')
+hazard_ratios(cox_base, 'all', 'year_mth_ord')
+
+png(filename = image_name('partial_pm25'))
+partials_plots = termplot(cox_base, terms = 1, se=T, plot = T)
+dev.off()
+
+png(filename = image_name('partial_start'))
+partials_plots = termplot(cox_base, terms = 2, se=T, plot = T)
+dev.off()
+
+hr1 = smoothHR(data = births_train, coxfit = cox_base)
+plot(hr1, predictor = 'pm25mean')
+
+partials = termplot
+
+sr <- cox.zph(cox_base)
+write.csv(round(sr$table, 3), file = output_name('full_model_sr'))
+
